@@ -26,30 +26,34 @@
 
 ## Установка (на MKS Pi / Raspberry Pi)
 
-Скопируй папку плагина на хост, например в `~/repower`, затем:
+Склонируй репозиторий на хост и запусти установщик — он **всё делает сам**:
 
 ```bash
+git clone https://github.com/bigtaed-sys/klipper_repower ~/repower
 cd ~/repower
 chmod +x install.sh
-./install.sh                 # слинкует repower.py в klippy/extras
-# при нестандартном пути:  KLIPPER_PATH=~/klipper ./install.sh
+./install.sh
 ```
 
-Скопируй (или слинкуй) `repower.cfg` в каталог конфигов принтера
-(`~/printer_data/config/`) и добавь в `printer.cfg`:
+Скрипт автономный и идемпотентный — его можно запускать повторно. Он:
 
-```ini
-[include repower.cfg]
+- находит Klipper и каталог конфигов (или возьмёт их из `KLIPPER_PATH` /
+  `KLIPPER_CONFIG`, если задать вручную);
+- слинкует `repower.py` в `klippy/extras/` и `repower.cfg` в каталог конфигов;
+- добавит `[include repower.cfg]` в `printer.cfg`, если его там нет;
+- добавит `[force_move] / enable_force_move: True`, если он ещё не включён;
+- пропишет секцию `[update_manager repower]` в `moonraker.conf` — обновления
+  прямо из веб-интерфейса;
+- перезапустит сервис Klipper.
+
+Удалить всё, что добавил скрипт (симлинки + перезапуск):
+
+```bash
+./install.sh --uninstall
 ```
 
-Убедись, что есть:
-
-```ini
-[force_move]
-enable_force_move: True
-```
-
-Перезапусти сервис Klipper (`RESTART_FIRMWARE` / restart хоста).
+> Записи `[include]`, `[force_move]` и `[update_manager]` при удалении
+> остаются в конфигах — убери их вручную, если плагин больше не нужен.
 
 ## Как пользоваться
 

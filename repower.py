@@ -14,6 +14,57 @@ import logging
 # Bump when the on-disk schema changes in an incompatible way.
 STATE_VERSION = 1
 
+# UI / dialog strings, keyed by language. The Fluidd panel manifest is static
+# (rebuilt only on restart), so the active language is resolved at build time.
+STRINGS = {
+    'en': {
+        'panel_title': 'Power Recovery',
+        'sec_status': 'Status',
+        'all_good': 'No interrupted print — everything is fine.',
+        'detected': 'Interrupted print detected',
+        'subtitle_idle': 'Ready. State is saved automatically while printing.',
+        'subtitle_armed': 'You can resume it below.',
+        'file': 'File', 'progress': 'Progress', 'height': 'Height',
+        'pos': 'Position', 'nozzle': 'Nozzle', 'bed': 'Bed', 'fan': 'Fan',
+        'sec_recover': 'Resume print',
+        'btn_recover': 'Recover', 'btn_discard': 'Discard',
+        'confirm_recover': 'Start power-loss recovery now? The printer will '
+                           'heat up, home X/Y and resume the print.',
+        'confirm_discard': 'Discard the saved recovery state? '
+                           'This cannot be undone.',
+        'sec_settings': 'Recovery settings',
+        'hint_settings': 'Tuned live; saved into the recovery macro.',
+        'purge': 'Purge', 'prime': 'Prime', 'zhop': 'Z hop',
+        'park_x': 'Park X', 'park_y': 'Park Y', 'travel': 'Travel speed',
+        'sec_tools': 'Tools', 'btn_dialog': 'Show recovery dialog',
+    },
+    'ru': {
+        'panel_title': 'Восстановление печати',
+        'sec_status': 'Состояние',
+        'all_good': 'Прерванных печатей нет — всё в порядке.',
+        'detected': 'Обнаружена прерванная печать',
+        'subtitle_idle': 'Готово. Состояние сохраняется автоматически во '
+                         'время печати.',
+        'subtitle_armed': 'Можно возобновить ниже.',
+        'file': 'Файл', 'progress': 'Прогресс', 'height': 'Высота',
+        'pos': 'Позиция', 'nozzle': 'Сопло', 'bed': 'Стол', 'fan': 'Обдув',
+        'sec_recover': 'Возобновить печать',
+        'btn_recover': 'Восстановить', 'btn_discard': 'Сбросить',
+        'confirm_recover': 'Начать восстановление после потери питания? '
+                           'Принтер прогреется, отхоумит X/Y и продолжит '
+                           'печать.',
+        'confirm_discard': 'Сбросить сохранённое состояние? '
+                           'Отменить будет нельзя.',
+        'sec_settings': 'Настройки восстановления',
+        'hint_settings': 'Меняются на лету; сохраняются в макрос '
+                         'восстановления.',
+        'purge': 'Прочистка', 'prime': 'Прайм', 'zhop': 'Подъём Z',
+        'park_x': 'Парковка X', 'park_y': 'Парковка Y',
+        'travel': 'Скорость перемещения',
+        'sec_tools': 'Инструменты', 'btn_dialog': 'Показать диалог',
+    },
+}
+
 
 class Repower:
     def __init__(self, config):
@@ -48,6 +99,11 @@ class Repower:
         # Advertise a native panel to the Fluidd plugin-UI API (fork feature).
         # Stock Fluidd/Mainsail simply ignore the extra 'fluidd_ui' status key.
         self.fluidd_panel = config.getboolean('fluidd_panel', True)
+        # Panel / dialog language. Applied at build time (manifest is static),
+        # so a change takes effect after a restart.
+        self.language = config.get('language', 'en').lower()
+        if self.language not in STRINGS:
+            self.language = 'en'
         self._fluidd_ui = self._build_fluidd_ui()
 
         # --- Runtime state -------------------------------------------------
@@ -248,6 +304,7 @@ class Repower:
             'version': STATE_VERSION,
             'file_name': file_name,
             'file_position': vsd_status.get('file_position', 0),
+            'file_size': vsd_status.get('file_size', 0),
             'x': pos[0], 'y': pos[1], 'z': pos[2], 'e': pos[3],
             'gcode_x': gpos[0], 'gcode_y': gpos[1],
             'gcode_z': gpos[2], 'gcode_e': gpos[3],
@@ -293,8 +350,9 @@ class Repower:
     def _build_fluidd_ui(self):
         # Native Fluidd panel manifest (fork plugin-UI API, schema v1). Built
         # once; it is static and Moonraker only sends it on change.
-        recoverable = {'bind': 'repower.recoverable', 'op': 'truthy'}
-        not_recoverable = {'bind': 'repower.recoverable', 'op': 'falsy'}
+        L = STRINGS[self.language]
+        armed = {'bind': 'repower.recoverable', 'op': 'truthy'}
+        idle = {'bind': 'repower.recoverable', 'op': 'falsy'}
         macro = 'gcode_macro REPOWER_RECOVER'
 
         def set_var(var):
@@ -302,73 +360,93 @@ class Repower:
                     'command': 'SET_GCODE_VARIABLE MACRO=REPOWER_RECOVER'
                                ' VARIABLE=%s VALUE={value}' % (var,)}
 
+        def status(label, path, unit=None, vis=None):
+            node = {'type': 'status', 'label': label,
+                    'value': {'bind': 'repower.' + path}}
+            if unit is not None:
+                node['unit'] = unit
+            if vis is not None:
+                node['visibleIf'] = vis
+            return node
+
+        def number(label, var, mn, mx, step):
+            return {'type': 'number', 'label': label, 'min': mn, 'max': mx,
+                    'step': step, 'bind': '%s.%s' % (macro, var),
+                    'action': set_var(var)}
+
         return {
             'schemaVersion': 1,
             'panels': [{
                 'id': 'repower',
-                'title': 'Power Recovery',
+                'title': L['panel_title'],
                 'icon': 'backup-restore',
                 'order': 500,
                 'layout': [
-                    {'type': 'section', 'title': 'Status', 'children': [
-                        {'type': 'text', 'variant': 'body',
-                         'value': 'No interrupted print — all good.',
-                         'visibleIf': not_recoverable},
+                    # --- Headline banner -------------------------------
+                    {'type': 'section', 'children': [
+                        {'type': 'text', 'variant': 'caption',
+                         'value': '✓  ' + L['all_good'], 'visibleIf': idle},
+                        {'type': 'text', 'variant': 'subtitle',
+                         'value': L['subtitle_idle'], 'visibleIf': idle},
                         {'type': 'text', 'variant': 'title',
-                         'value': 'Interrupted print detected',
-                         'visibleIf': recoverable},
-                        {'type': 'status', 'label': 'File',
-                         'value': {'bind': 'repower.file_name'},
-                         'visibleIf': recoverable},
-                        {'type': 'status', 'label': 'Height',
-                         'value': {'bind': 'repower.z'}, 'unit': 'mm',
-                         'visibleIf': recoverable},
-                        {'type': 'row', 'visibleIf': recoverable, 'children': [
-                            {'type': 'status', 'label': 'Nozzle',
-                             'value': {'bind': 'repower.extruder_temp'},
-                             'unit': '°C'},
-                            {'type': 'status', 'label': 'Bed',
-                             'value': {'bind': 'repower.bed_temp'},
-                             'unit': '°C'},
+                         'value': '⚠  ' + L['detected'], 'visibleIf': armed},
+                        {'type': 'text', 'variant': 'caption',
+                         'value': L['subtitle_armed'], 'visibleIf': armed},
+                    ]},
+                    # --- Live status grid (only when armed) ------------
+                    {'type': 'section', 'title': L['sec_status'],
+                     'visibleIf': armed, 'children': [
+                        status(L['file'], 'file_name'),
+                        {'type': 'row', 'children': [
+                            status(L['progress'], 'progress', '%'),
+                            status(L['height'], 'z', 'mm'),
+                        ]},
+                        {'type': 'row', 'children': [
+                            status(L['nozzle'], 'extruder_temp', '°C'),
+                            status(L['bed'], 'bed_temp', '°C'),
+                        ]},
+                        {'type': 'row', 'children': [
+                            status('X', 'x', 'mm'),
+                            status('Y', 'y', 'mm'),
                         ]},
                     ]},
-                    {'type': 'section', 'title': 'Recover',
-                     'visibleIf': recoverable, 'children': [
+                    # --- Primary actions -------------------------------
+                    {'type': 'section', 'title': L['sec_recover'],
+                     'visibleIf': armed, 'children': [
                         {'type': 'row', 'children': [
-                            {'type': 'button', 'label': 'Recover',
+                            {'type': 'button', 'label': L['btn_recover'],
                              'icon': 'play', 'color': 'success',
                              'action': {'kind': 'gcode',
                                         'command': 'REPOWER_RECOVER',
-                                        'confirm': 'Start power-loss'
-                                                   ' recovery now?'}},
-                            {'type': 'button', 'label': 'Discard',
+                                        'confirm': L['confirm_recover']}},
+                            {'type': 'button', 'label': L['btn_discard'],
                              'icon': 'delete', 'color': 'error',
                              'action': {'kind': 'gcode',
                                         'command': 'REPOWER_CLEAR',
-                                        'confirm': 'Discard the saved'
-                                                   ' recovery state?'}},
+                                        'confirm': L['confirm_discard']}},
                         ]},
-                    ]},
-                    {'type': 'section', 'title': 'Recovery settings',
-                     'collapsible': True, 'children': [
-                        {'type': 'number', 'label': 'Purge (mm)',
-                         'min': 0, 'max': 50, 'step': 1,
-                         'bind': macro + '.purge', 'action': set_var('purge')},
-                        {'type': 'number', 'label': 'Prime (mm)',
-                         'min': 0, 'max': 20, 'step': 0.5,
-                         'bind': macro + '.prime', 'action': set_var('prime')},
-                        {'type': 'number', 'label': 'Z hop (mm)',
-                         'min': 0, 'max': 30, 'step': 1,
-                         'bind': macro + '.z_hop',
-                         'action': set_var('z_hop')},
-                    ]},
-                    {'type': 'section', 'title': 'Tools',
-                     'collapsible': True, 'children': [
-                        {'type': 'button', 'label': 'Show recovery dialog',
+                        {'type': 'button', 'label': L['btn_dialog'],
                          'icon': 'bell', 'color': 'secondary',
-                         'visibleIf': recoverable,
                          'action': {'kind': 'gcode',
                                     'command': 'REPOWER_PROMPT'}},
+                    ]},
+                    # --- Tunable settings ------------------------------
+                    {'type': 'section', 'title': L['sec_settings'],
+                     'collapsible': True, 'children': [
+                        {'type': 'text', 'variant': 'caption',
+                         'value': L['hint_settings']},
+                        {'type': 'row', 'children': [
+                            number(L['purge'], 'purge', 0, 50, 1),
+                            number(L['prime'], 'prime', 0, 20, 0.5),
+                        ]},
+                        {'type': 'row', 'children': [
+                            number(L['zhop'], 'z_hop', 0, 30, 1),
+                            number(L['travel'], 'travel_speed', 10, 400, 5),
+                        ]},
+                        {'type': 'row', 'children': [
+                            number(L['park_x'], 'park_x', -1, 1000, 1),
+                            number(L['park_y'], 'park_y', -1, 1000, 1),
+                        ]},
                     ]},
                 ],
             }],
@@ -377,10 +455,15 @@ class Repower:
     # --------------------------------------------------------------- status
     def get_status(self, eventtime):
         st = self.state or {}
+        fsize = st.get('file_size', 0) or 0
+        fpos = st.get('file_position', 0) or 0
+        progress = round(100. * fpos / fsize, 1) if fsize else 0.
         status = {
             'recoverable': self.recoverable,
             'file_name': st.get('file_name', ''),
-            'file_position': st.get('file_position', 0),
+            'file_position': fpos,
+            'file_size': fsize,
+            'progress': progress,
             'x': st.get('x', 0.), 'y': st.get('y', 0.),
             'z': st.get('z', 0.), 'e': st.get('e', 0.),
             'gcode_e': st.get('gcode_e', 0.),

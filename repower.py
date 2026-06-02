@@ -37,6 +37,14 @@ class Repower:
         # filter and snapshots are taken every interval whenever the file
         # position advanced. Useful to reduce flash/SD wear on long prints.
         self.min_z_change = config.getfloat('min_z_change', 0., minval=0.)
+        # Raise the Mainsail/Fluidd recovery dialog automatically on boot.
+        # Fluidd only renders prompts received live (it does not rebuild them
+        # from the gcode history), so we re-emit it a few times to catch the
+        # moment the browser connects.
+        self.prompt_on_startup = config.getboolean('prompt_on_startup', True)
+        self.prompt_retries = config.getint('prompt_retries', 6, minval=1)
+        self.prompt_interval = config.getfloat(
+            'prompt_interval', 20., above=0.)
 
         # --- Runtime state -------------------------------------------------
         # Loaded snapshot (a dict) when a recoverable print is detected, else
@@ -50,6 +58,10 @@ class Repower:
         # Bookkeeping to avoid redundant writes.
         self._last_file_position = -1
         self._last_saved_z = None
+        # Auto-prompt re-show bookkeeping.
+        self._prompt_pending = False
+        self._prompt_attempts = 0
+        self._prompt_timer = None
         self._save_timer = None
 
         # --- Commands ------------------------------------------------------
@@ -65,6 +77,9 @@ class Repower:
         self.gcode.register_command(
             'REPOWER_PROMPT', self.cmd_REPOWER_PROMPT,
             desc=self.cmd_REPOWER_PROMPT_help)
+        self.gcode.register_command(
+            'REPOWER_PROMPT_DISMISS', self.cmd_REPOWER_PROMPT_DISMISS,
+            desc=self.cmd_REPOWER_PROMPT_DISMISS_help)
 
         self.printer.register_event_handler('klippy:ready',
                                             self._handle_ready)
@@ -80,10 +95,27 @@ class Repower:
             self.gcode.respond_info(
                 "repower: recoverable print detected (%s)."
                 % (self.state.get('file_name', '?'),))
-            # Pop an interactive dialog in Mainsail / Fluidd. The frontends
-            # replay the gcode response cache on load, so a page refresh
-            # re-shows it; REPOWER_PROMPT can also re-summon it manually.
-            self._show_prompt()
+            # Pop an interactive dialog in Mainsail / Fluidd. Fluidd only
+            # renders prompts received live, so re-emit it a few times to
+            # catch the browser connecting after boot. REPOWER_PROMPT can
+            # also re-summon it manually at any time.
+            if self.prompt_on_startup:
+                self._prompt_pending = True
+                self._prompt_attempts = 0
+                self._prompt_timer = self.reactor.register_timer(
+                    self._prompt_event, self.reactor.monotonic() + 2.)
+
+    def _prompt_event(self, eventtime):
+        # Periodically re-show the dialog until the user acts on it or the
+        # retry budget is exhausted.
+        if not self.recoverable or not self._prompt_pending:
+            return self.reactor.NEVER
+        self._show_prompt()
+        self._prompt_attempts += 1
+        if self._prompt_attempts >= self.prompt_retries:
+            self._prompt_pending = False
+            return self.reactor.NEVER
+        return eventtime + self.prompt_interval
 
     # ------------------------------------------------------- frontend dialog
     def _show_prompt(self):
@@ -151,6 +183,7 @@ class Repower:
                 pass
         self.state = None
         self.recoverable = False
+        self._prompt_pending = False
         self._last_file_position = -1
         self._last_saved_z = None
 
@@ -295,6 +328,14 @@ class Repower:
             gcmd.respond_info("repower: no recoverable print state")
             return
         self._show_prompt()
+
+    cmd_REPOWER_PROMPT_DISMISS_help = (
+        "Stop auto re-showing the recovery dialog (keeps the saved state)")
+
+    def cmd_REPOWER_PROMPT_DISMISS(self, gcmd):
+        # The "Close" button calls this so the dialog stops popping back up,
+        # while leaving the recovery state intact for the macro button.
+        self._prompt_pending = False
 
     cmd_REPOWER_CLEAR_help = "Discard any saved power-loss recovery state"
 

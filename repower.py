@@ -165,6 +165,19 @@ class Repower:
         if fan is not None:
             fan_speed = fan.get_status(eventtime).get('speed', 0.)
 
+        # Active gcode offset (probe Z offset / babystepping). Must be
+        # re-applied on resume or the recovered print is shifted in Z.
+        ho = gm.get('homing_origin', (0., 0., 0., 0.))
+        gcode_offset = [float(ho[0]), float(ho[1]), float(ho[2])]
+
+        # Currently loaded bed mesh profile, if any. A fresh G28 after a power
+        # loss drops the active mesh, so we re-load it on resume.
+        mesh_profile = ''
+        bed_mesh = self.printer.lookup_object('bed_mesh', None)
+        if bed_mesh is not None:
+            mesh_profile = bed_mesh.get_status(eventtime).get(
+                'profile_name', '') or ''
+
         return {
             'version': STATE_VERSION,
             'file_name': file_name,
@@ -176,6 +189,8 @@ class Repower:
             'absolute_extrude': gm.get('absolute_extrude', True),
             'speed_factor': gm.get('speed_factor', 1.),
             'extrude_factor': gm.get('extrude_factor', 1.),
+            'gcode_offset': gcode_offset,
+            'mesh_profile': mesh_profile,
             'extruder_temp': extruder_temp,
             'bed_temp': bed_temp,
             'fan_speed': fan_speed,
@@ -272,6 +287,17 @@ class Repower:
         script.append('M221 S%.0f' % (st.get('extrude_factor', 1.) * 100.,))
         script.append('M106 S%.0f'
                       % (max(0., min(1., st.get('fan_speed', 0.))) * 255.,))
+        # Re-load the bed mesh that was active before the outage (a fresh G28
+        # during recovery drops it). No-op move, just re-activates the mesh.
+        mesh_profile = st.get('mesh_profile')
+        if mesh_profile:
+            script.append('BED_MESH_PROFILE LOAD=%s' % (mesh_profile,))
+        # Re-apply the gcode offset (probe Z offset / babystep) without moving
+        # the toolhead, so resumed moves land at the same physical height.
+        off = st.get('gcode_offset')
+        if off:
+            script.append('SET_GCODE_OFFSET X=%.4f Y=%.4f Z=%.4f MOVE=0'
+                          % (off[0], off[1], off[2]))
         # Re-establish the extruder origin so absolute-E gcode continues from
         # the right value. Harmless when the file uses relative extrusion.
         script.append('G92 E%.5f' % (st.get('gcode_e', 0.),))

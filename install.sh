@@ -82,14 +82,32 @@ resolve_paths() {
     CFG_LINK="${CONFIG_DIR}/${PLUGIN}.cfg"
 }
 
-# --- Idempotently append a block to a file if a marker line is absent --------
+# --- Idempotently insert a block into a config file --------------------------
+# Inserts BEFORE Klipper's "#*# <--- SAVE_CONFIG --->" auto-generated section
+# (probe offsets, bed meshes, etc.) so we never corrupt saved calibration.
+# Falls back to appending when there is no SAVE_CONFIG block.
 ensure_block() {
     # $1 = file, $2 = grep pattern that proves it's already there, $3 = block
     local file="$1" pattern="$2" block="$3"
     if [ -f "${file}" ] && grep -qE "${pattern}" "${file}"; then
         return 1   # already present
     fi
-    printf '\n%s\n' "${block}" >> "${file}"
+    if [ ! -f "${file}" ]; then
+        return 1
+    fi
+    local marker
+    marker="$(grep -nE '^#\*#' "${file}" | head -1 | cut -d: -f1)"
+    if [ -n "${marker}" ]; then
+        local tmp="${file}.repower.tmp"
+        {
+            head -n "$((marker - 1))" "${file}"
+            printf '%s\n\n' "${block}"
+            tail -n "+${marker}" "${file}"
+        } > "${tmp}"
+        mv "${tmp}" "${file}"
+    else
+        printf '\n%s\n' "${block}" >> "${file}"
+    fi
     return 0       # added
 }
 
@@ -136,24 +154,27 @@ do_install() {
     # 3) Make sure printer.cfg includes it.
     if [ ! -f "${PRINTER_CFG}" ]; then
         warn "printer.cfg not found at ${PRINTER_CFG} — add '[include ${PLUGIN}.cfg]' yourself."
-    elif ensure_block "${PRINTER_CFG}" "^\[include ${PLUGIN}\.cfg\]" "[include ${PLUGIN}.cfg]"; then
+    elif ensure_block "${PRINTER_CFG}" "^[[:space:]]*\[include ${PLUGIN}\.cfg\]" "[include ${PLUGIN}.cfg]"; then
         log "Added '[include ${PLUGIN}.cfg]' to printer.cfg"
     else
         log "printer.cfg already includes ${PLUGIN}.cfg"
     fi
 
     # 4) Ensure [force_move] with enable_force_move is present (needed for the
-    #    Z handling in REPOWER_RECOVER). Check across all .cfg files first.
+    #    Z handling in REPOWER_RECOVER). Check across all .cfg files so we
+    #    never add a duplicate [force_move] section (that is a config error).
     if [ -f "${PRINTER_CFG}" ]; then
-        if grep -rqsE "^\s*enable_force_move\s*:\s*([Tt]rue|1)" "${CONFIG_DIR}"; then
+        if grep -rqsE "^[[:space:]]*enable_force_move[[:space:]]*[:=][[:space:]]*([Tt]rue|1)" "${CONFIG_DIR}"; then
             log "[force_move] (enable_force_move) already enabled"
+        elif grep -rqsE "^[[:space:]]*\[force_move\]" "${CONFIG_DIR}"; then
+            warn "A [force_move] section exists but enable_force_move is not True."
+            warn "Set 'enable_force_move: True' there — REPOWER_RECOVER needs it."
         else
-            ensure_block "${PRINTER_CFG}" "^\[force_move\]" \
+            ensure_block "${PRINTER_CFG}" "^[[:space:]]*\[force_move\]" \
 "[force_move]
 # Added by repower installer — required by REPOWER_RECOVER.
 enable_force_move: True" \
-                && log "Added [force_move] enable_force_move: True to printer.cfg" \
-                || warn "[force_move] exists but enable_force_move may be False — verify it is True."
+                && log "Added [force_move] enable_force_move: True to printer.cfg"
         fi
     fi
 

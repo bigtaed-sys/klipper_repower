@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+*.tmp
+repower_state.json

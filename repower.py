@@ -45,6 +45,10 @@ class Repower:
         self.prompt_retries = config.getint('prompt_retries', 6, minval=1)
         self.prompt_interval = config.getfloat(
             'prompt_interval', 20., above=0.)
+        # Advertise a native panel to the Fluidd plugin-UI API (fork feature).
+        # Stock Fluidd/Mainsail simply ignore the extra 'fluidd_ui' status key.
+        self.fluidd_panel = config.getboolean('fluidd_panel', True)
+        self._fluidd_ui = self._build_fluidd_ui()
 
         # --- Runtime state -------------------------------------------------
         # Loaded snapshot (a dict) when a recoverable print is detected, else
@@ -285,10 +289,95 @@ class Repower:
             self._last_saved_z = z
         return eventtime + self.save_interval
 
+    # --------------------------------------------------------- fluidd panel
+    def _build_fluidd_ui(self):
+        # Native Fluidd panel manifest (fork plugin-UI API, schema v1). Built
+        # once; it is static and Moonraker only sends it on change.
+        recoverable = {'bind': 'repower.recoverable', 'op': 'truthy'}
+        not_recoverable = {'bind': 'repower.recoverable', 'op': 'falsy'}
+        macro = 'gcode_macro REPOWER_RECOVER'
+
+        def set_var(var):
+            return {'kind': 'gcode',
+                    'command': 'SET_GCODE_VARIABLE MACRO=REPOWER_RECOVER'
+                               ' VARIABLE=%s VALUE={value}' % (var,)}
+
+        return {
+            'schemaVersion': 1,
+            'panels': [{
+                'id': 'repower',
+                'title': 'Power Recovery',
+                'icon': 'backup-restore',
+                'order': 500,
+                'layout': [
+                    {'type': 'section', 'title': 'Status', 'children': [
+                        {'type': 'text', 'variant': 'body',
+                         'value': 'No interrupted print — all good.',
+                         'visibleIf': not_recoverable},
+                        {'type': 'text', 'variant': 'title',
+                         'value': 'Interrupted print detected',
+                         'visibleIf': recoverable},
+                        {'type': 'status', 'label': 'File',
+                         'value': {'bind': 'repower.file_name'},
+                         'visibleIf': recoverable},
+                        {'type': 'status', 'label': 'Height',
+                         'value': {'bind': 'repower.z'}, 'unit': 'mm',
+                         'visibleIf': recoverable},
+                        {'type': 'row', 'visibleIf': recoverable, 'children': [
+                            {'type': 'status', 'label': 'Nozzle',
+                             'value': {'bind': 'repower.extruder_temp'},
+                             'unit': '°C'},
+                            {'type': 'status', 'label': 'Bed',
+                             'value': {'bind': 'repower.bed_temp'},
+                             'unit': '°C'},
+                        ]},
+                    ]},
+                    {'type': 'section', 'title': 'Recover',
+                     'visibleIf': recoverable, 'children': [
+                        {'type': 'row', 'children': [
+                            {'type': 'button', 'label': 'Recover',
+                             'icon': 'play', 'color': 'success',
+                             'action': {'kind': 'gcode',
+                                        'command': 'REPOWER_RECOVER',
+                                        'confirm': 'Start power-loss'
+                                                   ' recovery now?'}},
+                            {'type': 'button', 'label': 'Discard',
+                             'icon': 'delete', 'color': 'error',
+                             'action': {'kind': 'gcode',
+                                        'command': 'REPOWER_CLEAR',
+                                        'confirm': 'Discard the saved'
+                                                   ' recovery state?'}},
+                        ]},
+                    ]},
+                    {'type': 'section', 'title': 'Recovery settings',
+                     'collapsible': True, 'children': [
+                        {'type': 'number', 'label': 'Purge (mm)',
+                         'min': 0, 'max': 50, 'step': 1,
+                         'bind': macro + '.purge', 'action': set_var('purge')},
+                        {'type': 'number', 'label': 'Prime (mm)',
+                         'min': 0, 'max': 20, 'step': 0.5,
+                         'bind': macro + '.prime', 'action': set_var('prime')},
+                        {'type': 'number', 'label': 'Z hop (mm)',
+                         'min': 0, 'max': 30, 'step': 1,
+                         'bind': macro + '.z_hop',
+                         'action': set_var('z_hop')},
+                    ]},
+                    {'type': 'section', 'title': 'Tools',
+                     'collapsible': True, 'children': [
+                        {'type': 'button', 'label': 'Show recovery dialog',
+                         'icon': 'bell', 'color': 'secondary',
+                         'visibleIf': recoverable,
+                         'action': {'kind': 'gcode',
+                                    'command': 'REPOWER_PROMPT'}},
+                    ]},
+                ],
+            }],
+        }
+
     # --------------------------------------------------------------- status
     def get_status(self, eventtime):
         st = self.state or {}
-        return {
+        status = {
             'recoverable': self.recoverable,
             'file_name': st.get('file_name', ''),
             'file_position': st.get('file_position', 0),
@@ -299,6 +388,9 @@ class Repower:
             'bed_temp': st.get('bed_temp', 0.),
             'fan_speed': st.get('fan_speed', 0.),
         }
+        if self.fluidd_panel:
+            status['fluidd_ui'] = self._fluidd_ui
+        return status
 
     # ------------------------------------------------------------- commands
     cmd_REPOWER_QUERY_help = "Report whether a recoverable print is available"

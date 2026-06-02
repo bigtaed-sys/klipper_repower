@@ -62,6 +62,9 @@ class Repower:
         self.gcode.register_command(
             'REPOWER_CLEAR', self.cmd_REPOWER_CLEAR,
             desc=self.cmd_REPOWER_CLEAR_help)
+        self.gcode.register_command(
+            'REPOWER_PROMPT', self.cmd_REPOWER_PROMPT,
+            desc=self.cmd_REPOWER_PROMPT_help)
 
         self.printer.register_event_handler('klippy:ready',
                                             self._handle_ready)
@@ -75,9 +78,35 @@ class Repower:
             self._save_event, self.reactor.NOW)
         if self.recoverable:
             self.gcode.respond_info(
-                "repower: recoverable print detected (%s). Run"
-                " REPOWER_RECOVER to resume, or REPOWER_CLEAR to discard."
+                "repower: recoverable print detected (%s)."
                 % (self.state.get('file_name', '?'),))
+            # Pop an interactive dialog in Mainsail / Fluidd. The frontends
+            # replay the gcode response cache on load, so a page refresh
+            # re-shows it; REPOWER_PROMPT can also re-summon it manually.
+            self._show_prompt()
+
+    # ------------------------------------------------------- frontend dialog
+    def _show_prompt(self):
+        # Emit the Mainsail/Fluidd interactive-prompt action responses. Each
+        # respond_info line is sent prefixed with "// ", which the frontends
+        # parse as "// action:prompt_...". No [respond] section required.
+        st = self.state or {}
+        g = self.gcode
+        g.respond_info("action:prompt_end")  # clear any stale dialog
+        g.respond_info("action:prompt_begin Power-loss recovery")
+        g.respond_info("action:prompt_text An interrupted print was detected:")
+        g.respond_info("action:prompt_text %s" % (st.get('file_name', '?'),))
+        g.respond_info(
+            "action:prompt_text Resume at Z%.2f  (nozzle %.0f / bed %.0f)?"
+            % (st.get('z', 0.), st.get('extruder_temp', 0.),
+               st.get('bed_temp', 0.)))
+        g.respond_info("action:prompt_button_group_start")
+        g.respond_info("action:prompt_button Recover|REPOWER_RECOVER|primary")
+        g.respond_info("action:prompt_button Discard|REPOWER_PROMPT_DISCARD|error")
+        g.respond_info("action:prompt_button_group_end")
+        g.respond_info(
+            "action:prompt_footer_button Close|REPOWER_PROMPT_CLOSE|secondary")
+        g.respond_info("action:prompt_show")
 
     # ------------------------------------------------------------ disk state
     def _load_state(self):
@@ -257,6 +286,15 @@ class Repower:
                st.get('x', 0.), st.get('y', 0.), st.get('z', 0.),
                st.get('extruder_temp', 0.), st.get('bed_temp', 0.),
                st.get('fan_speed', 0.) * 100.))
+
+    cmd_REPOWER_PROMPT_help = (
+        "Show the Mainsail/Fluidd recovery dialog for the saved print")
+
+    def cmd_REPOWER_PROMPT(self, gcmd):
+        if not self.recoverable:
+            gcmd.respond_info("repower: no recoverable print state")
+            return
+        self._show_prompt()
 
     cmd_REPOWER_CLEAR_help = "Discard any saved power-loss recovery state"
 

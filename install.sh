@@ -47,8 +47,11 @@ declare -A MSG_EN=(
     [set_title]="Recovery settings"  [set_pick]="Pick a setting to change:"
     [set_interval]="Snapshot interval"   [set_purge]="Purge after re-heat"
     [set_prime]="Prime on return"        [set_zhop]="Z hop"
-    [set_travel]="Travel speed"          [set_parkx]="Park X (<0 = off)"
-    [set_party]="Park Y (<0 = off)"      [set_probe]="Probe-based Z recovery"
+    [set_travel]="Travel speed"          [set_parkx]="Park X (<0 = auto)"
+    [set_party]="Park Y (<0 = auto)"     [set_probe]="Probe-based Z recovery"
+    [set_pmode]="Purge mode"
+    [l_linelen]="Purge line length (mm)" [l_linez]="Purge line height (mm)"
+    [l_linespeed]="Purge line speed (mm/s)"
     [on]="ON" [off]="OFF"
     [q_interval]="Seconds (lower = less lost progress, more disk writes):"
     [l_purge]="Purge (mm)"  [l_prime]="Prime (mm)"  [l_zhop]="Z hop (mm)"
@@ -92,8 +95,11 @@ declare -A MSG_RU=(
     [set_title]="Настройки восстановления"  [set_pick]="Выберите, что изменить:"
     [set_interval]="Интервал снапшотов"   [set_purge]="Прочистка после нагрева"
     [set_prime]="Прайм при возврате"      [set_zhop]="Подъём Z"
-    [set_travel]="Скорость перемещения"   [set_parkx]="Парковка X (<0 = выкл)"
-    [set_party]="Парковка Y (<0 = выкл)"  [set_probe]="Восстановление Z пробой"
+    [set_travel]="Скорость перемещения"   [set_parkx]="Парковка X (<0 = авто)"
+    [set_party]="Парковка Y (<0 = авто)"  [set_probe]="Восстановление Z пробой"
+    [set_pmode]="Режим прочистки"
+    [l_linelen]="Длина линии прочистки (мм)" [l_linez]="Высота линии (мм)"
+    [l_linespeed]="Скорость линии (мм/с)"
     [on]="ВКЛ" [off]="ВЫКЛ"
     [q_interval]="Секунды (меньше = меньше потерь, чаще запись):"
     [l_purge]="Прочистка (мм)"  [l_prime]="Прайм (мм)"  [l_zhop]="Подъём Z (мм)"
@@ -277,6 +283,54 @@ set_rp() { cfg_set "${ACTIVE_CFG}" "[repower]" "$1" "$2"; NEED_RESTART=1; }
 # value or default
 gd() { local v; v="$(get_rp "$1")"; echo "${v:-$2}"; }
 
+# Option keys defined in the template's [repower] section (active or
+# #commented as "#key:"); help comments with spaces after '#' are skipped.
+template_keys() {
+    # Commented section headers (e.g. "#[force_move]") also end the section,
+    # so options from the force_move note do not leak into [repower].
+    awk 'BEGIN{insec=0}
+        /^[ \t]*#?\[/{insec=($0=="[repower]"); next}
+        insec && /^[ \t]*#?[A-Za-z_]+[ \t]*:/ {
+            l=$0; sub(/^[ \t]*#?/,"",l); sub(/[ \t]*:.*/,"",l);
+            if (l ~ /^[A-Za-z_]+$/) print l }
+    ' "${TEMPLATE_CFG}" | awk '!seen[$0]++'
+}
+# 0 if key exists (active or #commented) in the section.
+cfg_haskey() {
+    awk -v section="$2" -v key="$3" 'BEGIN{insec=0;f=1}
+        /^\[/{insec=($0==section);next}
+        insec && $0 ~ ("^[ \t]*#?" key "[ \t]*:"){f=0}
+        END{exit f}' "$1"
+}
+# Print the raw line for key in the section (commented or not).
+cfg_rawline() {
+    awk -v section="$2" -v key="$3" 'BEGIN{insec=0}
+        /^\[/{insec=($0==section);next}
+        insec && $0 ~ ("^[ \t]*#?" key "[ \t]*:"){print; exit}' "$1"
+}
+# Insert a raw line at the end of the section.
+cfg_insert() {
+    local file="$1" section="$2" line="$3"
+    awk -v section="${section}" -v line="${line}" 'BEGIN{insec=0;done=0}
+        {if($0~/^\[/){if(insec&&!done){print line;done=1}insec=($0==section);print;next}print}
+        END{if(insec&&!done)print line}' "${file}" > "${file}.rptmp" \
+        && mv "${file}.rptmp" "${file}"
+}
+# Add any [repower] option that exists in the template but is missing from the
+# user's config (as the template's commented hint), preserving their values.
+sync_settings() {
+    [ -f "${ACTIVE_CFG}" ] || return 0
+    local k line
+    while IFS= read -r k; do
+        [ -n "${k}" ] || continue
+        cfg_haskey "${ACTIVE_CFG}" "[repower]" "${k}" && continue
+        line="$(cfg_rawline "${TEMPLATE_CFG}" "[repower]" "${k}")"
+        [ -n "${line}" ] || continue
+        cfg_insert "${ACTIVE_CFG}" "[repower]" "${line}"
+        log "New option added to ${PLUGIN}.cfg: ${k}"; NEED_RESTART=1
+    done < <(template_keys)
+}
+
 restart_service() {
     local svc
     if svc="$(find_service)"; then
@@ -329,6 +383,8 @@ install_config() {
         ln -sf "${TEMPLATE_MACROS}" "${MACROS_LINK}"
         log "Linked ${PLUGIN}_macros.cfg -> ${MACROS_LINK}"
     fi
+    # Bring in any new options added upstream (as commented hints).
+    sync_settings
 }
 wire_printer_cfg() {
     [ -f "${PRINTER_CFG}" ] || { warn "printer.cfg not found — add '[include ${PLUGIN}.cfg]'."; return 0; }
@@ -395,20 +451,32 @@ settings_menu() {
         zh="$(gd z_hop 5)";  tv="$(gd travel_speed 150)"
         px="$(gd park_x -1)"; py="$(gd park_y -1)"
         up="$(gd use_probe True)"
+        local pm ll lz lsp
+        pm="$(gd purge_mode line)"
+        ll="$(gd purge_line_length 40)"; lz="$(gd purge_line_z 0.3)"
+        lsp="$(gd purge_line_speed 15)"
         case "${up}" in 0|[Ff]alse|[Nn]o|off) up_lbl="$(t off)";; *) up_lbl="$(t on)";; esac
         c="$(ui_menu "$(t set_title)" "$(t set_pick)" \
             interval "$(t set_interval): ${si} s" \
+            probe    "$(t set_probe): ${up_lbl}" \
+            pmode    "$(t set_pmode): ${pm}" \
             purge    "$(t set_purge): ${pg} mm" \
+            linelen  "$(t l_linelen): ${ll}" \
+            linez    "$(t l_linez): ${lz}" \
+            linespd  "$(t l_linespeed): ${lsp}" \
             prime    "$(t set_prime): ${pr} mm" \
             zhop     "$(t set_zhop): ${zh} mm" \
             travel   "$(t set_travel): ${tv} mm/s" \
             parkx    "$(t set_parkx): ${px}" \
             parky    "$(t set_party): ${py}" \
-            probe    "$(t set_probe): ${up_lbl}" \
             back     "$(t back)")" || return 0
         case "${c}" in
             interval) local v; v="$(ui_input "$(t set_interval)" "$(t q_interval)" "${si}")" && [ -n "${v}" ] && set_rp save_interval "${v}";;
+            pmode)  [ "${pm}" = line ] && set_rp purge_mode blob || set_rp purge_mode line;;
             purge)  edit_number "$(t l_purge)" purge 8;;
+            linelen)  edit_number "$(t l_linelen)" purge_line_length 40;;
+            linez)    edit_number "$(t l_linez)" purge_line_z 0.3;;
+            linespd)  edit_number "$(t l_linespeed)" purge_line_speed 15;;
             prime)  edit_number "$(t l_prime)" prime 0;;
             zhop)   edit_number "$(t l_zhop)" z_hop 5;;
             travel) edit_number "$(t l_travel)" travel_speed 150;;
@@ -492,6 +560,7 @@ language:        $(gd language en)
 save_interval:   $(gd save_interval 1.0) s
 notify:          $(gd notify none)
 use_probe:       $(gd use_probe True)
+purge_mode:      $(gd purge_mode line)
 purge / prime:   $(gd purge 8) / $(gd prime 0) mm
 z_hop / travel:  $(gd z_hop 5) / $(gd travel_speed 150)
 park_x / park_y: $(gd park_x -1) / $(gd park_y -1)

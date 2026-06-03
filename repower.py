@@ -19,15 +19,17 @@ STATE_VERSION = 1
 STRINGS = {
     'en': {
         'panel_title': 'Power Recovery',
+        'tab_status': 'Status', 'tab_settings': 'Settings',
         'sec_status': 'Status',
-        'all_good': 'No interrupted print — everything is fine.',
-        'detected': 'Interrupted print detected',
+        'all_good': '✓  No interrupted print — everything is fine.',
+        'detected': '⚠  Interrupted print detected',
         'subtitle_idle': 'Ready. State is saved automatically while printing.',
         'subtitle_armed': 'You can resume it below.',
         'file': 'File', 'progress': 'Progress', 'height': 'Height',
         'pos': 'Position', 'nozzle': 'Nozzle', 'bed': 'Bed', 'fan': 'Fan',
         'sec_recover': 'Resume print',
         'btn_recover': 'Recover', 'btn_discard': 'Discard',
+        'btn_close': 'Close',
         'confirm_recover': 'Start power-loss recovery now? The printer will '
                            'heat up, home X/Y and resume the print.',
         'confirm_discard': 'Discard the saved recovery state? '
@@ -37,12 +39,18 @@ STRINGS = {
         'purge': 'Purge', 'prime': 'Prime', 'zhop': 'Z hop',
         'park_x': 'Park X', 'park_y': 'Park Y', 'travel': 'Travel speed',
         'sec_tools': 'Tools', 'btn_dialog': 'Show recovery dialog',
+        'sec_language': 'Language', 'lang_label': 'Interface language',
+        'lang_en': 'English', 'lang_ru': 'Русский',
+        'dlg_title': 'Power-loss recovery',
+        'dlg_detected': 'An interrupted print was detected:',
+        'dlg_resume': 'Resume at Z%.2f  (nozzle %.0f / bed %.0f)?',
     },
     'ru': {
         'panel_title': 'Восстановление печати',
+        'tab_status': 'Состояние', 'tab_settings': 'Настройки',
         'sec_status': 'Состояние',
-        'all_good': 'Прерванных печатей нет — всё в порядке.',
-        'detected': 'Обнаружена прерванная печать',
+        'all_good': '✓  Прерванных печатей нет — всё в порядке.',
+        'detected': '⚠  Обнаружена прерванная печать',
         'subtitle_idle': 'Готово. Состояние сохраняется автоматически во '
                          'время печати.',
         'subtitle_armed': 'Можно возобновить ниже.',
@@ -50,6 +58,7 @@ STRINGS = {
         'pos': 'Позиция', 'nozzle': 'Сопло', 'bed': 'Стол', 'fan': 'Обдув',
         'sec_recover': 'Возобновить печать',
         'btn_recover': 'Восстановить', 'btn_discard': 'Сбросить',
+        'btn_close': 'Закрыть',
         'confirm_recover': 'Начать восстановление после потери питания? '
                            'Принтер прогреется, отхоумит X/Y и продолжит '
                            'печать.',
@@ -62,6 +71,11 @@ STRINGS = {
         'park_x': 'Парковка X', 'park_y': 'Парковка Y',
         'travel': 'Скорость перемещения',
         'sec_tools': 'Инструменты', 'btn_dialog': 'Показать диалог',
+        'sec_language': 'Язык', 'lang_label': 'Язык интерфейса',
+        'lang_en': 'English', 'lang_ru': 'Русский',
+        'dlg_title': 'Восстановление после сбоя',
+        'dlg_detected': 'Обнаружена прерванная печать:',
+        'dlg_resume': 'Продолжить с Z%.2f  (сопло %.0f / стол %.0f)?',
     },
 }
 
@@ -140,6 +154,9 @@ class Repower:
         self.gcode.register_command(
             'REPOWER_PROMPT_DISMISS', self.cmd_REPOWER_PROMPT_DISMISS,
             desc=self.cmd_REPOWER_PROMPT_DISMISS_help)
+        self.gcode.register_command(
+            'REPOWER_SET_LANGUAGE', self.cmd_REPOWER_SET_LANGUAGE,
+            desc=self.cmd_REPOWER_SET_LANGUAGE_help)
 
         self.printer.register_event_handler('klippy:ready',
                                             self._handle_ready)
@@ -183,21 +200,24 @@ class Repower:
         # respond_info line is sent prefixed with "// ", which the frontends
         # parse as "// action:prompt_...". No [respond] section required.
         st = self.state or {}
+        L = STRINGS[self.language]
         g = self.gcode
         g.respond_info("action:prompt_end")  # clear any stale dialog
-        g.respond_info("action:prompt_begin Power-loss recovery")
-        g.respond_info("action:prompt_text An interrupted print was detected:")
+        g.respond_info("action:prompt_begin %s" % (L['dlg_title'],))
+        g.respond_info("action:prompt_text %s" % (L['dlg_detected'],))
         g.respond_info("action:prompt_text %s" % (st.get('file_name', '?'),))
         g.respond_info(
-            "action:prompt_text Resume at Z%.2f  (nozzle %.0f / bed %.0f)?"
+            "action:prompt_text " + L['dlg_resume']
             % (st.get('z', 0.), st.get('extruder_temp', 0.),
                st.get('bed_temp', 0.)))
         g.respond_info("action:prompt_button_group_start")
-        g.respond_info("action:prompt_button Recover|REPOWER_RECOVER|primary")
-        g.respond_info("action:prompt_button Discard|REPOWER_PROMPT_DISCARD|error")
+        g.respond_info("action:prompt_button %s|REPOWER_RECOVER|primary"
+                       % (L['btn_recover'],))
+        g.respond_info("action:prompt_button %s|REPOWER_PROMPT_DISCARD|error"
+                       % (L['btn_discard'],))
         g.respond_info("action:prompt_button_group_end")
-        g.respond_info(
-            "action:prompt_footer_button Close|REPOWER_PROMPT_CLOSE|secondary")
+        g.respond_info("action:prompt_footer_button %s|REPOWER_PROMPT_CLOSE"
+                       "|secondary" % (L['btn_close'],))
         g.respond_info("action:prompt_show")
 
     # ------------------------------------------------------------ disk state
@@ -348,8 +368,9 @@ class Repower:
 
     # --------------------------------------------------------- fluidd panel
     def _build_fluidd_ui(self):
-        # Native Fluidd panel manifest (fork plugin-UI API, schema v1). Built
-        # once; it is static and Moonraker only sends it on change.
+        # Native Fluidd panel manifest (fork plugin-UI API, schema v1). The
+        # fork live re-renders when the manifest changes, so e.g. switching
+        # language rebuilds this and updates instantly.
         L = STRINGS[self.language]
         armed = {'bind': 'repower.recoverable', 'op': 'truthy'}
         idle = {'bind': 'repower.recoverable', 'op': 'falsy'}
@@ -360,13 +381,15 @@ class Repower:
                     'command': 'SET_GCODE_VARIABLE MACRO=REPOWER_RECOVER'
                                ' VARIABLE=%s VALUE={value}' % (var,)}
 
-        def status(label, path, unit=None, vis=None):
-            node = {'type': 'status', 'label': label,
-                    'value': {'bind': 'repower.' + path}}
+        def status(label, path, unit=None, fmt=None, rules=None):
+            value = {'bind': 'repower.' + path}
+            if fmt is not None:
+                value['format'] = fmt
+            node = {'type': 'status', 'label': label, 'value': value}
             if unit is not None:
                 node['unit'] = unit
-            if vis is not None:
-                node['visibleIf'] = vis
+            if rules is not None:
+                node['colorRules'] = rules
             return node
 
         def number(label, var, mn, mx, step):
@@ -374,81 +397,98 @@ class Repower:
                     'step': step, 'bind': '%s.%s' % (macro, var),
                     'action': set_var(var)}
 
+        # Status tab content -------------------------------------------------
+        status_tab = [
+            {'type': 'text', 'variant': 'subtitle',
+             'value': L['all_good'], 'visibleIf': idle},
+            {'type': 'text', 'variant': 'caption',
+             'value': L['subtitle_idle'], 'visibleIf': idle},
+            {'type': 'text', 'variant': 'title',
+             'value': L['detected'], 'visibleIf': armed},
+            {'type': 'text', 'variant': 'caption',
+             'value': L['subtitle_armed'], 'visibleIf': armed},
+            {'type': 'section', 'visibleIf': armed, 'children': [
+                {'type': 'progress', 'label': L['progress'],
+                 'value': {'bind': 'repower.progress'}, 'max': 100,
+                 'color': 'primary'},
+                status(L['file'], 'file_name'),
+                {'type': 'row', 'children': [
+                    {'type': 'gauge', 'label': L['nozzle'],
+                     'value': {'bind': 'repower.extruder_temp'},
+                     'min': 0, 'max': 300, 'unit': '°C', 'color': 'error'},
+                    {'type': 'gauge', 'label': L['bed'],
+                     'value': {'bind': 'repower.bed_temp'},
+                     'min': 0, 'max': 120, 'unit': '°C', 'color': 'warning'},
+                ]},
+                {'type': 'row', 'children': [
+                    status(L['height'], 'z', 'mm', 'fixed2'),
+                    status(L['fan'], 'fan_speed', None, 'percent'),
+                ]},
+                {'type': 'row', 'children': [
+                    status('X', 'x', 'mm', 'fixed1'),
+                    status('Y', 'y', 'mm', 'fixed1'),
+                ]},
+                {'type': 'row', 'children': [
+                    {'type': 'button', 'label': L['btn_recover'],
+                     'icon': 'play', 'color': 'success',
+                     'action': {'kind': 'gcode', 'command': 'REPOWER_RECOVER',
+                                'confirm': L['confirm_recover']}},
+                    {'type': 'button', 'label': L['btn_discard'],
+                     'icon': 'stop', 'color': 'error',
+                     'action': {'kind': 'gcode', 'command': 'REPOWER_CLEAR',
+                                'confirm': L['confirm_discard']}},
+                ]},
+                {'type': 'button', 'label': L['btn_dialog'],
+                 'icon': 'send', 'color': 'secondary',
+                 'action': {'kind': 'gcode', 'command': 'REPOWER_PROMPT'}},
+            ]},
+        ]
+
+        # Settings tab content ----------------------------------------------
+        settings_tab = [
+            {'type': 'section', 'title': L['sec_settings'], 'children': [
+                {'type': 'text', 'variant': 'caption',
+                 'value': L['hint_settings']},
+                {'type': 'row', 'children': [
+                    number(L['purge'], 'purge', 0, 50, 1),
+                    number(L['prime'], 'prime', 0, 20, 0.5),
+                ]},
+                {'type': 'row', 'children': [
+                    number(L['zhop'], 'z_hop', 0, 30, 1),
+                    number(L['travel'], 'travel_speed', 10, 400, 5),
+                ]},
+                {'type': 'row', 'children': [
+                    number(L['park_x'], 'park_x', -1, 1000, 1),
+                    number(L['park_y'], 'park_y', -1, 1000, 1),
+                ]},
+            ]},
+            {'type': 'section', 'title': L['sec_language'], 'children': [
+                {'type': 'select', 'label': L['lang_label'],
+                 'bind': 'repower.language',
+                 'action': {'kind': 'gcode',
+                            'command': 'REPOWER_SET_LANGUAGE LANG={value}'},
+                 'options': [
+                     {'label': L['lang_en'], 'value': 'en'},
+                     {'label': L['lang_ru'], 'value': 'ru'},
+                 ]},
+            ]},
+        ]
+
         return {
             'schemaVersion': 1,
             'panels': [{
                 'id': 'repower',
                 'title': L['panel_title'],
-                'icon': 'backup-restore',
+                'icon': 'power',
+                'surface': 'both',
                 'order': 500,
-                'layout': [
-                    # --- Headline banner -------------------------------
-                    {'type': 'section', 'children': [
-                        {'type': 'text', 'variant': 'caption',
-                         'value': '✓  ' + L['all_good'], 'visibleIf': idle},
-                        {'type': 'text', 'variant': 'subtitle',
-                         'value': L['subtitle_idle'], 'visibleIf': idle},
-                        {'type': 'text', 'variant': 'title',
-                         'value': '⚠  ' + L['detected'], 'visibleIf': armed},
-                        {'type': 'text', 'variant': 'caption',
-                         'value': L['subtitle_armed'], 'visibleIf': armed},
-                    ]},
-                    # --- Live status grid (only when armed) ------------
-                    {'type': 'section', 'title': L['sec_status'],
-                     'visibleIf': armed, 'children': [
-                        status(L['file'], 'file_name'),
-                        {'type': 'row', 'children': [
-                            status(L['progress'], 'progress', '%'),
-                            status(L['height'], 'z', 'mm'),
-                        ]},
-                        {'type': 'row', 'children': [
-                            status(L['nozzle'], 'extruder_temp', '°C'),
-                            status(L['bed'], 'bed_temp', '°C'),
-                        ]},
-                        {'type': 'row', 'children': [
-                            status('X', 'x', 'mm'),
-                            status('Y', 'y', 'mm'),
-                        ]},
-                    ]},
-                    # --- Primary actions -------------------------------
-                    {'type': 'section', 'title': L['sec_recover'],
-                     'visibleIf': armed, 'children': [
-                        {'type': 'row', 'children': [
-                            {'type': 'button', 'label': L['btn_recover'],
-                             'icon': 'play', 'color': 'success',
-                             'action': {'kind': 'gcode',
-                                        'command': 'REPOWER_RECOVER',
-                                        'confirm': L['confirm_recover']}},
-                            {'type': 'button', 'label': L['btn_discard'],
-                             'icon': 'delete', 'color': 'error',
-                             'action': {'kind': 'gcode',
-                                        'command': 'REPOWER_CLEAR',
-                                        'confirm': L['confirm_discard']}},
-                        ]},
-                        {'type': 'button', 'label': L['btn_dialog'],
-                         'icon': 'bell', 'color': 'secondary',
-                         'action': {'kind': 'gcode',
-                                    'command': 'REPOWER_PROMPT'}},
-                    ]},
-                    # --- Tunable settings ------------------------------
-                    {'type': 'section', 'title': L['sec_settings'],
-                     'collapsible': True, 'children': [
-                        {'type': 'text', 'variant': 'caption',
-                         'value': L['hint_settings']},
-                        {'type': 'row', 'children': [
-                            number(L['purge'], 'purge', 0, 50, 1),
-                            number(L['prime'], 'prime', 0, 20, 0.5),
-                        ]},
-                        {'type': 'row', 'children': [
-                            number(L['zhop'], 'z_hop', 0, 30, 1),
-                            number(L['travel'], 'travel_speed', 10, 400, 5),
-                        ]},
-                        {'type': 'row', 'children': [
-                            number(L['park_x'], 'park_x', -1, 1000, 1),
-                            number(L['park_y'], 'park_y', -1, 1000, 1),
-                        ]},
-                    ]},
-                ],
+                'badge': {'bind': 'repower.recoverable'},
+                'layout': [{'type': 'tabs', 'tabs': [
+                    {'label': L['tab_status'], 'icon': 'home',
+                     'children': status_tab},
+                    {'label': L['tab_settings'], 'icon': 'cog',
+                     'children': settings_tab},
+                ]}],
             }],
         }
 
@@ -460,6 +500,7 @@ class Repower:
         progress = round(100. * fpos / fsize, 1) if fsize else 0.
         status = {
             'recoverable': self.recoverable,
+            'language': self.language,
             'file_name': st.get('file_name', ''),
             'file_position': fpos,
             'file_size': fsize,
@@ -511,6 +552,19 @@ class Repower:
         # The "Close" button calls this so the dialog stops popping back up,
         # while leaving the recovery state intact for the macro button.
         self._prompt_pending = False
+
+    cmd_REPOWER_SET_LANGUAGE_help = (
+        "Switch the panel/dialog language live: REPOWER_SET_LANGUAGE LANG=ru")
+
+    def cmd_REPOWER_SET_LANGUAGE(self, gcmd):
+        lang = gcmd.get('LANG', 'en').lower()
+        if lang not in STRINGS:
+            raise gcmd.error("repower: unknown language '%s' (have: %s)"
+                             % (lang, ', '.join(sorted(STRINGS))))
+        self.language = lang
+        # Rebuild the manifest; the fork live re-renders on the next status.
+        self._fluidd_ui = self._build_fluidd_ui()
+        gcmd.respond_info("repower: language set to %s" % (lang,))
 
     cmd_REPOWER_CLEAR_help = "Discard any saved power-loss recovery state"
 

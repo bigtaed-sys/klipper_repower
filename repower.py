@@ -30,6 +30,7 @@ STRINGS = {
         'subtitle_armed': 'You can resume it below.',
         'file': 'File', 'progress': 'Progress', 'height': 'Height',
         'pos': 'Position', 'nozzle': 'Nozzle', 'bed': 'Bed', 'fan': 'Fan',
+        'zmethod': 'Z recovery',
         'sec_recover': 'Resume print',
         'btn_recover': 'Recover', 'btn_discard': 'Discard',
         'btn_close': 'Close',
@@ -60,6 +61,7 @@ STRINGS = {
         'subtitle_armed': 'Можно возобновить ниже.',
         'file': 'Файл', 'progress': 'Прогресс', 'height': 'Высота',
         'pos': 'Позиция', 'nozzle': 'Сопло', 'bed': 'Стол', 'fan': 'Обдув',
+        'zmethod': 'Восстановление Z',
         'sec_recover': 'Возобновить печать',
         'btn_recover': 'Восстановить', 'btn_discard': 'Сбросить',
         'btn_close': 'Закрыть',
@@ -136,6 +138,22 @@ class Repower:
             'notify_ntfy_url', 'https://ntfy.sh').rstrip('/')
         self.notify_ntfy_topic = config.get('notify_ntfy_topic', '')
 
+        # --- Probe-based Z recovery ----------------------------------------
+        # Re-establish true Z by probing a CLEAR area of the bed (never over
+        # the model). Requires a probe (BLTouch/inductive). Safe on screw Z.
+        # Required free margin (mm) to place an auto probe point beside the
+        # model, and how far from the model edge the point is placed.
+        self.recovery_clearance = config.getfloat(
+            'recovery_clearance', 15., minval=0.)
+        # Fixed fallback probe point (mm). <0 = unset.
+        self.recovery_probe_x = config.getfloat('recovery_probe_x', -1.)
+        self.recovery_probe_y = config.getfloat('recovery_probe_y', -1.)
+        # Running model bounding box [minx, miny, maxx, maxy] for the current
+        # print, and the file it belongs to (reset when the file changes).
+        self._bbox = None
+        self._bbox_file = None
+        self._probe_z_offset = 0.
+
         # --- Runtime state -------------------------------------------------
         # Loaded snapshot (a dict) when a recoverable print is detected, else
         # None.
@@ -182,6 +200,8 @@ class Repower:
 
     # ----------------------------------------------------------------- setup
     def _handle_ready(self):
+        # Cache the probe's configured z_offset for probe-based Z recovery.
+        self._probe_z_offset = self._read_probe_offset()
         # Try to load any leftover snapshot from a previous (interrupted) run.
         self._load_state()
         # Start periodic snapshotting.
@@ -285,6 +305,75 @@ class Repower:
                        "|secondary" % (L['btn_close'],))
         g.respond_info("action:prompt_show")
 
+    def _read_probe_offset(self):
+        # Read the configured probe z_offset (handles probe / bltooth / etc.).
+        try:
+            cfg = self.printer.lookup_object('configfile')
+            settings = cfg.get_status(self.reactor.monotonic())['settings']
+        except Exception:
+            return 0.
+        for key in ('probe', 'bltouch', 'smart_effector',
+                    'probe_eddy_current'):
+            sub = settings.get(key)
+            if sub and 'z_offset' in sub:
+                try:
+                    return float(sub['z_offset'])
+                except (TypeError, ValueError):
+                    pass
+        return 0.
+
+    def _probe_point(self, eventtime):
+        # Decide where (if anywhere) it is safe to probe the bare bed:
+        #   1) auto: a point beside the model bounding box with clearance,
+        #   2) else a configured fixed point (if it clears the model),
+        #   3) else give up -> caller trusts the saved Z.
+        # Returns (ok, x, y).
+        if self.printer.lookup_object('probe', None) is None:
+            return (False, 0., 0.)
+        th = self.printer.lookup_object('toolhead', None)
+        if th is None:
+            return (False, 0., 0.)
+        ts = th.get_status(eventtime)
+        amin = ts.get('axis_minimum')
+        amax = ts.get('axis_maximum')
+        if not amin or not amax:
+            return (False, 0., 0.)
+        bxmin, bymin, bxmax, bymax = amin[0], amin[1], amax[0], amax[1]
+        clr = self.recovery_clearance
+        bbox = (self.state or {}).get('bbox')
+
+        def clamp(px, py):
+            return (min(max(px, bxmin + 1.), bxmax - 1.),
+                    min(max(py, bymin + 1.), bymax - 1.))
+
+        if bbox:
+            minx, miny, maxx, maxy = bbox
+            cx, cy = (minx + maxx) / 2., (miny + maxy) / 2.
+            # (gap on this side, point placed `clr` beyond the model edge)
+            candidates = [
+                (bxmax - maxx, (maxx + clr, cy)),   # right
+                (minx - bxmin, (minx - clr, cy)),   # left
+                (bymax - maxy, (cx, maxy + clr)),   # back
+                (miny - bymin, (cx, miny - clr)),   # front
+            ]
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            gap, (px, py) = candidates[0]
+            if gap >= clr:
+                px, py = clamp(px, py)
+                return (True, px, py)
+
+        # Fixed fallback point.
+        if self.recovery_probe_x >= 0. and self.recovery_probe_y >= 0.:
+            px, py = self.recovery_probe_x, self.recovery_probe_y
+            if bbox:
+                minx, miny, maxx, maxy = bbox
+                if (minx - clr <= px <= maxx + clr
+                        and miny - clr <= py <= maxy + clr):
+                    return (False, 0., 0.)   # fixed point sits over the model
+            px, py = clamp(px, py)
+            return (True, px, py)
+        return (False, 0., 0.)
+
     # ------------------------------------------------------------ disk state
     def _load_state(self):
         self.state = None
@@ -329,6 +418,8 @@ class Repower:
         self.state = None
         self.recoverable = False
         self._prompt_pending = False
+        self._bbox = None
+        self._bbox_file = None
         self._last_file_position = -1
         self._last_saved_z = None
 
@@ -385,6 +476,15 @@ class Repower:
             mesh_profile = bed_mesh.get_status(eventtime).get(
                 'profile_name', '') or ''
 
+        # Accumulate the model bounding box for this file (reset on new file).
+        if self._bbox_file != file_name or self._bbox is None:
+            self._bbox_file = file_name
+            self._bbox = [pos[0], pos[1], pos[0], pos[1]]
+        else:
+            b = self._bbox
+            b[0] = min(b[0], pos[0]); b[1] = min(b[1], pos[1])
+            b[2] = max(b[2], pos[0]); b[3] = max(b[3], pos[1])
+
         return {
             'version': STATE_VERSION,
             'file_name': file_name,
@@ -399,6 +499,7 @@ class Repower:
             'extrude_factor': gm.get('extrude_factor', 1.),
             'gcode_offset': gcode_offset,
             'mesh_profile': mesh_profile,
+            'bbox': list(self._bbox),
             'extruder_temp': extruder_temp,
             'bed_temp': bed_temp,
             'fan_speed': fan_speed,
@@ -493,6 +594,7 @@ class Repower:
                     status('X', 'x', 'mm', 'fixed1'),
                     status('Y', 'y', 'mm', 'fixed1'),
                 ]},
+                status(L['zmethod'], 'z_method'),
                 {'type': 'row', 'children': [
                     {'type': 'button', 'label': L['btn_recover'],
                      'icon': 'play', 'color': 'success',
@@ -563,9 +665,18 @@ class Repower:
         fsize = st.get('file_size', 0) or 0
         fpos = st.get('file_position', 0) or 0
         progress = round(100. * fpos / fsize, 1) if fsize else 0.
+        if self.recoverable:
+            probe_ok, probe_x, probe_y = self._probe_point(eventtime)
+        else:
+            probe_ok, probe_x, probe_y = (False, 0., 0.)
         status = {
             'recoverable': self.recoverable,
             'language': self.language,
+            'probe_ok': probe_ok,
+            'probe_x': round(probe_x, 2),
+            'probe_y': round(probe_y, 2),
+            'probe_z_offset': round(self._probe_z_offset, 4),
+            'z_method': 'probe' if probe_ok else 'trust',
             'file_name': st.get('file_name', ''),
             'file_position': fpos,
             'file_size': fsize,

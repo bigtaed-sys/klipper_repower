@@ -518,17 +518,43 @@ class Repower:
             gcmd.respond_info("repower: no recoverable print state")
             return
         st = self.state
+        eventtime = self.reactor.monotonic()
+        # Probe-based Z recovery diagnostics (why it will / will not run).
+        probe_present = self.printer.lookup_object('probe', None) is not None
+        probe_ok, px, py = self._probe_point(eventtime)
+        bbox = st.get('bbox')
+        macro = self.printer.lookup_object(
+            'gcode_macro REPOWER_RECOVER', None)
+        use_probe = (macro.get_status(eventtime).get('use_probe')
+                     if macro is not None else '?')
+        if probe_ok:
+            zline = "Z method: PROBE at X%.1f Y%.1f (offset %.3f)" % (
+                px, py, self._probe_z_offset)
+        else:
+            if not probe_present:
+                why = "no [probe]/[bltouch] object"
+            elif not bbox:
+                why = "no model bounding box saved"
+            elif self.recovery_probe_x < 0.:
+                why = "no clear area and no recovery_probe_x/y set"
+            else:
+                why = "no safe probe point found"
+            zline = "Z method: TRUST saved Z  (probe skipped: %s)" % (why,)
         gcmd.respond_info(
             "repower: recoverable print\n"
             " file: %s\n"
             " file_position: %d\n"
             " position: X%.2f Y%.2f Z%.3f\n"
             " temps: extruder %.0f / bed %.0f\n"
-            " fan: %.0f%%"
+            " fan: %.0f%%\n"
+            " model bbox: %s\n"
+            " use_probe=%s  probe_present=%s  probe_ok=%s\n"
+            " %s"
             % (st.get('file_name', '?'), st.get('file_position', 0),
                st.get('x', 0.), st.get('y', 0.), st.get('z', 0.),
                st.get('extruder_temp', 0.), st.get('bed_temp', 0.),
-               st.get('fan_speed', 0.) * 100.))
+               st.get('fan_speed', 0.) * 100., bbox,
+               use_probe, probe_present, probe_ok, zline))
 
     cmd_REPOWER_PROMPT_help = (
         "Show the Mainsail/Fluidd recovery dialog for the saved print")

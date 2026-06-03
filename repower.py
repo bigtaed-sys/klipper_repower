@@ -533,7 +533,8 @@ class Repower:
             g = self._recovery_geometry(eventtime)
         else:
             g = {'probe_ok': False, 'px': 0., 'py': 0.,
-                 'park_ok': False, 'kx': 0., 'ky': 0.}
+                 'park_ok': False, 'kx': 0., 'ky': 0.,
+                 'line_ok': False, 'ex': 0., 'ey': 0.}
         # Effective park/heat spot: configured value wins, else the auto bed
         # corner (so heat-up & purge happen at a corner, not at the probe pt).
         if self.park_x >= 0. and self.park_y >= 0.:

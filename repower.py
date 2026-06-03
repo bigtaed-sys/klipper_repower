@@ -10,6 +10,9 @@
 import os
 import json
 import logging
+import threading
+import urllib.request
+import urllib.parse
 
 # Bump when the on-disk schema changes in an incompatible way.
 STATE_VERSION = 1
@@ -44,6 +47,7 @@ STRINGS = {
         'dlg_title': 'Power-loss recovery',
         'dlg_detected': 'An interrupted print was detected:',
         'dlg_resume': 'Resume at Z%.2f  (nozzle %.0f / bed %.0f)?',
+        'notify_body': "\U0001F50C Power loss: print '%s' can be recovered.",
     },
     'ru': {
         'panel_title': 'Восстановление печати',
@@ -76,6 +80,8 @@ STRINGS = {
         'dlg_title': 'Восстановление после сбоя',
         'dlg_detected': 'Обнаружена прерванная печать:',
         'dlg_resume': 'Продолжить с Z%.2f  (сопло %.0f / стол %.0f)?',
+        'notify_body': "\U0001F50C Потеря питания: печать '%s' можно "
+                       "восстановить.",
     },
 }
 
@@ -120,6 +126,16 @@ class Repower:
             self.language = 'en'
         self._fluidd_ui = self._build_fluidd_ui()
 
+        # --- Notifications -------------------------------------------------
+        # Push a message when a recoverable print is detected on boot.
+        # channel: none | telegram | ntfy
+        self.notify = config.get('notify', 'none').lower()
+        self.notify_telegram_token = config.get('notify_telegram_token', '')
+        self.notify_telegram_chat = config.get('notify_telegram_chat', '')
+        self.notify_ntfy_url = config.get(
+            'notify_ntfy_url', 'https://ntfy.sh').rstrip('/')
+        self.notify_ntfy_topic = config.get('notify_ntfy_topic', '')
+
         # --- Runtime state -------------------------------------------------
         # Loaded snapshot (a dict) when a recoverable print is detected, else
         # None.
@@ -157,6 +173,9 @@ class Repower:
         self.gcode.register_command(
             'REPOWER_SET_LANGUAGE', self.cmd_REPOWER_SET_LANGUAGE,
             desc=self.cmd_REPOWER_SET_LANGUAGE_help)
+        self.gcode.register_command(
+            'REPOWER_NOTIFY_TEST', self.cmd_REPOWER_NOTIFY_TEST,
+            desc=self.cmd_REPOWER_NOTIFY_TEST_help)
 
         self.printer.register_event_handler('klippy:ready',
                                             self._handle_ready)
@@ -181,6 +200,52 @@ class Repower:
                 self._prompt_attempts = 0
                 self._prompt_timer = self.reactor.register_timer(
                     self._prompt_event, self.reactor.monotonic() + 2.)
+            # Fire a push notification (non-blocking, best effort).
+            self._notify(STRINGS[self.language]['notify_body']
+                         % (self.state.get('file_name', '?'),))
+
+    # -------------------------------------------------------- notifications
+    def _notify(self, text):
+        # Build a request for the configured channel and send it from a
+        # daemon thread so the reactor is never blocked on the network.
+        if self.notify == 'none':
+            return
+        req = None
+        try:
+            if self.notify == 'telegram':
+                if not (self.notify_telegram_token
+                        and self.notify_telegram_chat):
+                    logging.warning("repower: telegram not configured")
+                    return
+                url = ("https://api.telegram.org/bot%s/sendMessage"
+                       % (self.notify_telegram_token,))
+                data = urllib.parse.urlencode({
+                    'chat_id': self.notify_telegram_chat,
+                    'text': text,
+                }).encode('utf-8')
+                req = urllib.request.Request(url, data=data)
+            elif self.notify == 'ntfy':
+                if not self.notify_ntfy_topic:
+                    logging.warning("repower: ntfy topic not configured")
+                    return
+                url = '%s/%s' % (self.notify_ntfy_url, self.notify_ntfy_topic)
+                req = urllib.request.Request(
+                    url, data=text.encode('utf-8'))
+            else:
+                logging.warning("repower: unknown notify channel '%s'",
+                                self.notify)
+                return
+        except Exception as e:
+            logging.warning("repower: failed to build notification: %s", e)
+            return
+        threading.Thread(target=self._send_request, args=(req,),
+                         daemon=True).start()
+
+    def _send_request(self, req):
+        try:
+            urllib.request.urlopen(req, timeout=10).read()
+        except Exception as e:
+            logging.warning("repower: notification send failed: %s", e)
 
     def _prompt_event(self, eventtime):
         # Periodically re-show the dialog until the user acts on it or the
@@ -565,6 +630,17 @@ class Repower:
         # Rebuild the manifest; the fork live re-renders on the next status.
         self._fluidd_ui = self._build_fluidd_ui()
         gcmd.respond_info("repower: language set to %s" % (lang,))
+
+    cmd_REPOWER_NOTIFY_TEST_help = "Send a test push notification"
+
+    def cmd_REPOWER_NOTIFY_TEST(self, gcmd):
+        if self.notify == 'none':
+            gcmd.respond_info("repower: notifications are disabled (notify: "
+                              "none)")
+            return
+        self._notify("repower: test notification (%s)" % (self.notify,))
+        gcmd.respond_info("repower: test notification queued via %s"
+                          % (self.notify,))
 
     cmd_REPOWER_CLEAR_help = "Discard any saved power-loss recovery state"
 

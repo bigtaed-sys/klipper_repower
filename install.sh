@@ -1,26 +1,25 @@
 #!/bin/bash
 # =============================================================================
-#  Installer for the "repower" power-loss recovery plugin for Klipper.
+#  repower — installer & control panel (power-loss recovery for Klipper)
 #
-#  Interactive & self-contained. Auto-detects Klipper and the config dir,
-#  links the module, installs a user-owned config, wires up printer.cfg
-#  ([include] + [force_move]), adds a Moonraker update_manager entry, and
-#  restarts the service. On first run it offers a guided setup (menu language,
-#  snapshot interval, purge, push notifications). Re-runs without a TTY (e.g.
-#  Moonraker auto-update) skip all prompts and just repair the install.
+#  Run with no arguments for the interactive menu (install, change settings &
+#  modes, notifications, language, status, uninstall). Without a TTY (e.g.
+#  Moonraker auto-update) it silently installs/repairs.
 #
-#  Usage:
-#     ./install.sh                 # guided install / repair
+#  Flags:
+#     ./install.sh                 # menu (or silent repair without a TTY)
+#     ./install.sh --menu          # force the menu
 #     ./install.sh --non-interactive
-#     ./install.sh --reconfigure   # re-run the guided setup only
 #     ./install.sh --uninstall
 #
 #  Overrides: KLIPPER_PATH=~/klipper KLIPPER_CONFIG=~/printer_data/config
 # =============================================================================
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PLUGIN="repower"
+BT="repower  •  power-loss recovery for Klipper"
+NEED_RESTART=0
 
 log()  { printf '\033[0;32m[repower]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[repower]\033[0m %s\n' "$*"; }
@@ -31,94 +30,58 @@ if [ "$(id -u)" -eq 0 ]; then
     exit 1
 fi
 
-# --- Setup defaults (overridden by the guided setup) -------------------------
-PANEL_LANG="en"
-SAVE_INTERVAL="1.0"
-PURGE="8"
-NOTIFY="none"
-TG_TOKEN=""
-TG_CHAT=""
-NTFY_URL="https://ntfy.sh"
-NTFY_TOPIC=""
-INSTALLER_LANG="en"
-
-# =============================================================================
-#  Localized installer messages
-# =============================================================================
-declare -A MSG_EN=(
-    [welcome]="repower setup — power-loss recovery for Klipper"
-    [ask_interval]="Snapshot interval in seconds (lower = less lost progress, more disk writes)"
-    [ask_purge]="Purge length after re-heating, in mm (clears ooze before resuming)"
-    [notify_text]="Push a notification when a recoverable print is found after a power loss?"
-    [notify_none]="No notifications"
-    [ask_tg_token]="Telegram bot token (from @BotFather)"
-    [ask_tg_chat]="Telegram chat id (your numeric id)"
-    [ask_ntfy_topic]="ntfy topic (subscribe to it in the ntfy app)"
-    [ask_ntfy_url]="ntfy server URL"
-    [test_q]="Send a test notification now?"
-    [test_ok]="Test sent — check your device."
-    [test_fail]="Test failed to send (check token/topic and network)."
-    [summary]="Setup summary"
-    [done]="Install complete. After restart, open Fluidd or run REPOWER_QUERY."
-)
-declare -A MSG_RU=(
-    [welcome]="Настройка repower — восстановление печати после потери питания"
-    [ask_interval]="Интервал снапшотов в секундах (меньше = меньше потерь, чаще запись на диск)"
-    [ask_purge]="Длина прочистки после нагрева, мм (убирает каплю перед продолжением)"
-    [notify_text]="Слать уведомление, когда после сбоя найдена восстановимая печать?"
-    [notify_none]="Без уведомлений"
-    [ask_tg_token]="Токен Telegram-бота (от @BotFather)"
-    [ask_tg_chat]="Telegram chat id (ваш числовой id)"
-    [ask_ntfy_topic]="Тема ntfy (подпишитесь на неё в приложении ntfy)"
-    [ask_ntfy_url]="URL сервера ntfy"
-    [test_q]="Отправить тестовое уведомление сейчас?"
-    [test_ok]="Тест отправлен — проверьте устройство."
-    [test_fail]="Не удалось отправить тест (проверьте токен/тему и сеть)."
-    [summary]="Итог настройки"
-    [done]="Установка завершена. После рестарта откройте Fluidd или REPOWER_QUERY."
-)
-t() {
-    local k="$1"
-    if [ "${INSTALLER_LANG}" = "ru" ]; then echo "${MSG_RU[$k]}"
-    else echo "${MSG_EN[$k]}"; fi
-}
-
 # =============================================================================
 #  UI primitives (whiptail when available, plain prompts otherwise)
 # =============================================================================
 HAS_WHIPTAIL=0
 command -v whiptail >/dev/null 2>&1 && HAS_WHIPTAIL=1
 
-ui_menu() {   # title text  tag1 item1 [tag2 item2 ...]  -> prints chosen tag
+banner() {
+    printf '\033[1;36m'
+    cat <<'B'
+   ┌──────────────────────────────────────────────────┐
+   │   repower  ·  power-loss recovery for Klipper      │
+   └──────────────────────────────────────────────────┘
+B
+    printf '\033[0m\n'
+}
+
+ui_menu() {   # title text  tag1 item1 [...]  -> prints chosen tag
     local title="$1" text="$2"; shift 2
     if [ "${HAS_WHIPTAIL}" = 1 ]; then
-        whiptail --title "${title}" --notags --menu "${text}" 18 74 6 \
-            "$@" 3>&1 1>&2 2>&3
+        whiptail --backtitle "${BT}" --title "${title}" --notags \
+            --menu "${text}" 20 76 10 "$@" 3>&1 1>&2 2>&3
     else
-        echo "${text}" >&2
-        local tag item
-        while [ $# -gt 0 ]; do tag="$1"; item="$2"; shift 2
-            echo "   ${tag}) ${item}" >&2; done
-        local ans; read -r -p "> " ans </dev/tty || true; echo "${ans}"
+        echo "== ${title} ==" >&2; echo "${text}" >&2
+        while [ $# -gt 0 ]; do echo "   $1) $2" >&2; shift 2; done
+        local a; read -r -p "> " a </dev/tty || true; echo "${a}"
     fi
 }
 ui_input() {  # title text default  -> prints value
     local title="$1" text="$2" def="$3"
     if [ "${HAS_WHIPTAIL}" = 1 ]; then
-        whiptail --title "${title}" --inputbox "${text}" 11 74 "${def}" \
-            3>&1 1>&2 2>&3
+        whiptail --backtitle "${BT}" --title "${title}" \
+            --inputbox "${text}" 11 76 "${def}" 3>&1 1>&2 2>&3
     else
-        local ans; read -r -p "${text} [${def}]: " ans </dev/tty || true
-        echo "${ans:-$def}"
+        local a; read -r -p "${text} [${def}]: " a </dev/tty || true
+        echo "${a:-$def}"
     fi
 }
-ui_yesno() {  # title text  -> return 0 (yes) / 1 (no)
+ui_yesno() {  # title text  -> 0 yes / 1 no
     local title="$1" text="$2"
     if [ "${HAS_WHIPTAIL}" = 1 ]; then
-        whiptail --title "${title}" --yesno "${text}" 11 74
+        whiptail --backtitle "${BT}" --title "${title}" --yesno "${text}" 12 76
     else
-        local ans; read -r -p "${text} [y/N]: " ans </dev/tty || true
-        [[ "${ans}" =~ ^[Yy] ]]
+        local a; read -r -p "${text} [y/N]: " a </dev/tty || true
+        [[ "${a}" =~ ^[Yy] ]]
+    fi
+}
+ui_msg() {    # title text
+    if [ "${HAS_WHIPTAIL}" = 1 ]; then
+        whiptail --backtitle "${BT}" --title "${1}" --msgbox "${2}" 20 76
+    else
+        echo "== ${1} ==" >&2; printf '%s\n' "${2}" >&2
+        read -r -p "[Enter]" _ </dev/tty || true
     fi
 }
 
@@ -127,42 +90,33 @@ ui_yesno() {  # title text  -> return 0 (yes) / 1 (no)
 # =============================================================================
 find_klipper() {
     if [ -n "${KLIPPER_PATH:-}" ] && [ -d "${KLIPPER_PATH}/klippy/extras" ]; then
-        echo "${KLIPPER_PATH}"; return 0
-    fi
+        echo "${KLIPPER_PATH}"; return 0; fi
     for d in "${HOME}/klipper" "${HOME}/Klipper" /usr/share/klipper /opt/klipper; do
-        [ -d "${d}/klippy/extras" ] && { echo "${d}"; return 0; }
-    done
+        [ -d "${d}/klippy/extras" ] && { echo "${d}"; return 0; }; done
     return 1
 }
 find_config() {
     if [ -n "${KLIPPER_CONFIG:-}" ] && [ -d "${KLIPPER_CONFIG}" ]; then
-        echo "${KLIPPER_CONFIG}"; return 0
-    fi
+        echo "${KLIPPER_CONFIG}"; return 0; fi
     for d in "${HOME}/printer_data/config" "${HOME}/klipper_config" \
              "${HOME}/printer_config"; do
-        [ -d "${d}" ] && { echo "${d}"; return 0; }
-    done
+        [ -d "${d}" ] && { echo "${d}"; return 0; }; done
     return 1
 }
 find_service() {
     for s in klipper klipper-1 Klipper; do
         if systemctl list-unit-files "${s}.service" 2>/dev/null \
-             | grep -q "${s}.service"; then
-            echo "${s}"; return 0
-        fi
-    done
-    return 1
+             | grep -q "${s}.service"; then echo "${s}"; return 0; fi
+    done; return 1
 }
 
 EXTRAS_LINK=""; CONFIG_DIR=""; PRINTER_CFG=""; ACTIVE_CFG=""; TEMPLATE_CFG=""
 resolve_paths() {
-    KLIPPER_PATH="$(find_klipper)" || {
-        err "Klipper not found. Set KLIPPER_PATH=/path/to/klipper and re-run."
-        exit 1; }
+    local kp cd
+    kp="$(find_klipper)" || { err "Klipper not found. Set KLIPPER_PATH."; exit 1; }
+    cd="$(find_config)"  || { err "Config dir not found. Set KLIPPER_CONFIG."; exit 1; }
+    KLIPPER_PATH="${kp}"; CONFIG_DIR="${cd}"
     EXTRAS_LINK="${KLIPPER_PATH}/klippy/extras/${PLUGIN}.py"
-    CONFIG_DIR="$(find_config)" || {
-        err "Config dir not found. Set KLIPPER_CONFIG=/path and re-run."
-        exit 1; }
     PRINTER_CFG="${CONFIG_DIR}/printer.cfg"
     ACTIVE_CFG="${CONFIG_DIR}/${PLUGIN}.cfg"
     TEMPLATE_CFG="${SCRIPT_DIR}/${PLUGIN}.cfg"
@@ -182,34 +136,45 @@ ensure_block() {
     if [ -n "${marker}" ]; then
         local tmp="${file}.rptmp"
         { head -n "$((marker - 1))" "${file}"; printf '%s\n\n' "${block}"
-          tail -n "+${marker}" "${file}"; } > "${tmp}"
-        mv "${tmp}" "${file}"
+          tail -n "+${marker}" "${file}"; } > "${tmp}"; mv "${tmp}" "${file}"
     else
         printf '\n%s\n' "${block}" >> "${file}"
     fi
     return 0
 }
-
-# Set "key: value" inside a given section (replaces an active or #commented
-# line, else inserts at the end of the section). Comment help-lines with
-# spaces after '#' are left alone.
+# Read an active "key: value" inside a section (empty if unset/commented).
+cfg_get() {
+    local file="$1" section="$2" key="$3"
+    [ -f "${file}" ] || return 0
+    awk -v section="${section}" -v key="${key}" '
+        BEGIN { insec = 0 }
+        { if ($0 ~ /^\[/) { insec = ($0 == section); next }
+          if (insec && $0 ~ ("^[ \t]*" key "[ \t]*:")) {
+              sub("^[ \t]*" key "[ \t]*:[ \t]*", "", $0); print $0; exit } }
+    ' "${file}"
+}
+# Set "key: value" inside a section (replaces active or #commented line, else
+# inserts at the section end). Leaves "#  key:" help comments alone.
 cfg_set() {
     local file="$1" section="$2" key="$3" val="$4"
     awk -v section="${section}" -v key="${key}" -v val="${val}" '
         BEGIN { insec = 0; done = 0 }
-        {
-            if ($0 ~ /^\[/) {
-                if (insec && !done) { print key ": " val; done = 1 }
-                insec = ($0 == section); print; next
-            }
-            if (insec && !done && $0 ~ ("^[ \t]*#?" key "[ \t]*:")) {
-                print key ": " val; done = 1; next
-            }
-            print
-        }
+        { if ($0 ~ /^\[/) {
+              if (insec && !done) { print key ": " val; done = 1 }
+              insec = ($0 == section); print; next }
+          if (insec && !done && $0 ~ ("^[ \t]*#?" key "[ \t]*:")) {
+              print key ": " val; done = 1; next }
+          print }
         END { if (insec && !done) print key ": " val }
     ' "${file}" > "${file}.rptmp" && mv "${file}.rptmp" "${file}"
 }
+get_rp()  { cfg_get "${ACTIVE_CFG}" "[repower]" "$1"; }
+get_mac() { cfg_get "${ACTIVE_CFG}" "[gcode_macro REPOWER_RECOVER]" "$1"; }
+set_rp()  { cfg_set "${ACTIVE_CFG}" "[repower]" "$1" "$2"; NEED_RESTART=1; }
+set_mac() { cfg_set "${ACTIVE_CFG}" "[gcode_macro REPOWER_RECOVER]" "$1" "$2"; NEED_RESTART=1; }
+# value or default
+gd() { local v; v="$(get_rp "$1")";  echo "${v:-$2}"; }
+gm() { local v; v="$(get_mac "$1")"; echo "${v:-$2}"; }
 
 restart_service() {
     local svc
@@ -217,190 +182,248 @@ restart_service() {
         log "Restarting service '${svc}'..."
         sudo systemctl restart "${svc}" \
             || warn "Could not restart ${svc}; restart it manually."
+        NEED_RESTART=0
     else
         warn "Klipper service not found; restart manually (FIRMWARE_RESTART)."
     fi
 }
-
-# =============================================================================
-#  Guided setup
-# =============================================================================
-configure() {
-    INSTALLER_LANG="$(ui_menu "Язык / Language" \
-        "Выберите язык / Choose a language" \
-        en "English" ru "Русский")" || INSTALLER_LANG="en"
-    [ -n "${INSTALLER_LANG}" ] || INSTALLER_LANG="en"
-    PANEL_LANG="${INSTALLER_LANG}"
-
-    SAVE_INTERVAL="$(ui_input "repower" "$(t ask_interval)" "${SAVE_INTERVAL}")" \
-        || true
-    PURGE="$(ui_input "repower" "$(t ask_purge)" "${PURGE}")" || true
-
-    NOTIFY="$(ui_menu "repower" "$(t notify_text)" \
-        none "$(t notify_none)" telegram "Telegram" ntfy "ntfy")" \
-        || NOTIFY="none"
-    [ -n "${NOTIFY}" ] || NOTIFY="none"
-    if [ "${NOTIFY}" = "telegram" ]; then
-        TG_TOKEN="$(ui_input "Telegram" "$(t ask_tg_token)" "")" || true
-        TG_CHAT="$(ui_input "Telegram" "$(t ask_tg_chat)" "")" || true
-    elif [ "${NOTIFY}" = "ntfy" ]; then
-        NTFY_TOPIC="$(ui_input "ntfy" "$(t ask_ntfy_topic)" "")" || true
-        NTFY_URL="$(ui_input "ntfy" "$(t ask_ntfy_url)" "${NTFY_URL}")" || true
+maybe_restart() {
+    [ "${NEED_RESTART}" = 1 ] || return 0
+    if ui_yesno "Apply changes" "Settings changed. Restart Klipper now to apply?"; then
+        restart_service
     fi
-
-    log "$(t summary):"
-    log "  language=${PANEL_LANG}  save_interval=${SAVE_INTERVAL}  purge=${PURGE}"
-    log "  notify=${NOTIFY}"
 }
 
-send_test_notification() {
-    command -v curl >/dev/null 2>&1 || return 0
-    [ "${NOTIFY}" = "none" ] && return 0
-    ui_yesno "repower" "$(t test_q)" || return 0
-    local ok=1
-    if [ "${NOTIFY}" = "telegram" ] && [ -n "${TG_TOKEN}" ]; then
-        curl -fsS "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TG_CHAT}" \
-            --data-urlencode "text=repower: test notification" \
-            >/dev/null 2>&1 && ok=0
-    elif [ "${NOTIFY}" = "ntfy" ] && [ -n "${NTFY_TOPIC}" ]; then
-        curl -fsS -d "repower: test notification" \
-            "${NTFY_URL%/}/${NTFY_TOPIC}" >/dev/null 2>&1 && ok=0
-    fi
-    [ "${ok}" = 0 ] && log "$(t test_ok)" || warn "$(t test_fail)"
-}
-
+# =============================================================================
+#  Core install (idempotent)
+# =============================================================================
 install_config() {
-    # User-owned config: copy the template once, then keep the user's edits.
-    if [ -L "${ACTIVE_CFG}" ]; then rm -f "${ACTIVE_CFG}"; fi   # old symlink
+    [ -L "${ACTIVE_CFG}" ] && rm -f "${ACTIVE_CFG}"          # drop old symlink
     if [ ! -e "${ACTIVE_CFG}" ]; then
         if [ "${TEMPLATE_CFG}" -ef "${ACTIVE_CFG}" ] 2>/dev/null; then :; else
             cp "${TEMPLATE_CFG}" "${ACTIVE_CFG}"
-            log "Installed ${PLUGIN}.cfg -> ${ACTIVE_CFG}"
+            log "Installed ${PLUGIN}.cfg -> ${ACTIVE_CFG}"; NEED_RESTART=1
         fi
     fi
 }
-
-apply_config() {
-    [ -f "${ACTIVE_CFG}" ] || return 0
-    cfg_set "${ACTIVE_CFG}" "[repower]" "language" "${PANEL_LANG}"
-    cfg_set "${ACTIVE_CFG}" "[repower]" "save_interval" "${SAVE_INTERVAL}"
-    cfg_set "${ACTIVE_CFG}" "[repower]" "notify" "${NOTIFY}"
-    if [ "${NOTIFY}" = "telegram" ]; then
-        cfg_set "${ACTIVE_CFG}" "[repower]" "notify_telegram_token" "${TG_TOKEN}"
-        cfg_set "${ACTIVE_CFG}" "[repower]" "notify_telegram_chat" "${TG_CHAT}"
-    elif [ "${NOTIFY}" = "ntfy" ]; then
-        cfg_set "${ACTIVE_CFG}" "[repower]" "notify_ntfy_topic" "${NTFY_TOPIC}"
-        cfg_set "${ACTIVE_CFG}" "[repower]" "notify_ntfy_url" "${NTFY_URL}"
-    fi
-    cfg_set "${ACTIVE_CFG}" "[gcode_macro REPOWER_RECOVER]" \
-        "variable_purge" "${PURGE}"
-    log "Applied settings to ${ACTIVE_CFG}"
-}
-
 wire_printer_cfg() {
-    if [ ! -f "${PRINTER_CFG}" ]; then
-        warn "printer.cfg not found — add '[include ${PLUGIN}.cfg]' yourself."
-        return 0
-    fi
+    [ -f "${PRINTER_CFG}" ] || { warn "printer.cfg not found — add '[include ${PLUGIN}.cfg]'."; return 0; }
     if ensure_block "${PRINTER_CFG}" \
         "^[[:space:]]*\[include ${PLUGIN}\.cfg\]" "[include ${PLUGIN}.cfg]"; then
-        log "Added '[include ${PLUGIN}.cfg]' to printer.cfg"
-    else
-        log "printer.cfg already includes ${PLUGIN}.cfg"
+        log "Added '[include ${PLUGIN}.cfg]'"; NEED_RESTART=1
     fi
     if grep -rqsE "^[[:space:]]*enable_force_move[[:space:]]*[:=][[:space:]]*([Tt]rue|1)" "${CONFIG_DIR}"; then
-        log "[force_move] already enabled"
+        :
     elif grep -rqsE "^[[:space:]]*\[force_move\]" "${CONFIG_DIR}"; then
         warn "[force_move] exists but enable_force_move is not True — set it."
     else
         ensure_block "${PRINTER_CFG}" "^[[:space:]]*\[force_move\]" \
 "[force_move]
 # Added by repower installer — required by REPOWER_RECOVER.
-enable_force_move: True" && log "Added [force_move] enable_force_move: True"
+enable_force_move: True" && { log "Added [force_move] enable_force_move: True"; NEED_RESTART=1; }
     fi
 }
-
 wire_moonraker() {
     local origin moon=""
     origin="$(git -C "${SCRIPT_DIR}" remote get-url origin 2>/dev/null || true)"
     for m in "${CONFIG_DIR}/moonraker.conf" \
              "${HOME}/printer_data/config/moonraker.conf"; do
-        [ -f "${m}" ] && { moon="${m}"; break; }
-    done
-    if [ -n "${moon}" ] && [ -n "${origin}" ]; then
-        if ensure_block "${moon}" "^\[update_manager ${PLUGIN}\]" \
+        [ -f "${m}" ] && { moon="${m}"; break; }; done
+    [ -n "${moon}" ] && [ -n "${origin}" ] || return 0
+    ensure_block "${moon}" "^\[update_manager ${PLUGIN}\]" \
 "[update_manager ${PLUGIN}]
 type: git_repo
 path: ${SCRIPT_DIR}
 origin: ${origin}
 primary_branch: main
 managed_services: klipper
-install_script: install.sh"; then
-            log "Added [update_manager ${PLUGIN}] to ${moon}"
-        else
-            log "Moonraker update_manager already configured"
-        fi
-    else
-        warn "Skipped Moonraker update_manager (moonraker.conf/origin missing)."
-    fi
+install_script: install.sh" && log "Added [update_manager ${PLUGIN}]"
 }
-
-# =============================================================================
-#  Top-level flows
-# =============================================================================
-do_install() {
-    local interactive="$1"
+core_install() {
     resolve_paths
-    log "Klipper:    ${KLIPPER_PATH}"
-    log "Config dir: ${CONFIG_DIR}"
-
+    [ -L "${EXTRAS_LINK}" ] || NEED_RESTART=1
     ln -sf "${SCRIPT_DIR}/${PLUGIN}.py" "${EXTRAS_LINK}"
-    log "Linked ${PLUGIN}.py -> ${EXTRAS_LINK}"
-
     install_config
-    if [ "${interactive}" = 1 ]; then
-        log "$(t welcome)"
-        configure
-        apply_config
-    fi
     wire_printer_cfg
     wire_moonraker
-    restart_service
-    [ "${interactive}" = 1 ] && send_test_notification || true
-    echo
-    log "$(t done)"
 }
 
-do_reconfigure() {
-    resolve_paths
-    install_config
-    configure
-    apply_config
-    restart_service
-    log "$(t done)"
+# =============================================================================
+#  Menu actions
+# =============================================================================
+edit_number() {  # section-fn-prefix label key default min max
+    local kind="$1" label="$2" key="$3" def="$4"
+    local cur new; cur="$( [ "${kind}" = rp ] && get_rp "${key}" || get_mac "${key}" )"
+    cur="${cur:-$def}"
+    new="$(ui_input "${label}" "${label}:" "${cur}")" || return 0
+    [ -n "${new}" ] || return 0
+    [ "${kind}" = rp ] && set_rp "${key}" "${new}" || set_mac "variable_${key}" "${new}"
+}
+
+settings_menu() {
+    while true; do
+        local si pg pr zh tv px py up
+        si="$(gd save_interval 1.0)"
+        pg="$(gm variable_purge 8)";  pr="$(gm variable_prime 0)"
+        zh="$(gm variable_z_hop 5)";  tv="$(gm variable_travel_speed 150)"
+        px="$(gm variable_park_x -1)"; py="$(gm variable_park_y -1)"
+        up="$(gm variable_use_probe 1)"
+        local up_lbl="ON"; [ "${up}" = 0 ] && up_lbl="OFF"
+        local c
+        c="$(ui_menu "Recovery settings" "Pick a setting to change:" \
+            interval "Snapshot interval ............. ${si} s" \
+            purge    "Purge after re-heat .......... ${pg} mm" \
+            prime    "Prime on return .............. ${pr} mm" \
+            zhop     "Z hop ........................ ${zh} mm" \
+            travel   "Travel speed ................. ${tv} mm/s" \
+            parkx    "Park X (<0 = off) ............ ${px}" \
+            parky    "Park Y (<0 = off) ............ ${py}" \
+            probe    "Probe-based Z recovery ....... ${up_lbl}" \
+            back     "‹ Back")" || return 0
+        case "${c}" in
+            interval) local v; v="$(ui_input "Snapshot interval" "Seconds (lower = less lost, more writes):" "${si}")" && [ -n "${v}" ] && set_rp save_interval "${v}";;
+            purge)  edit_number mac "Purge (mm)" purge 8;;
+            prime)  edit_number mac "Prime (mm)" prime 0;;
+            zhop)   edit_number mac "Z hop (mm)" z_hop 5;;
+            travel) edit_number mac "Travel speed (mm/s)" travel_speed 150;;
+            parkx)  edit_number mac "Park X (<0 disables)" park_x -1;;
+            parky)  edit_number mac "Park Y (<0 disables)" park_y -1;;
+            probe)
+                if ui_yesno "Probe-based Z recovery" "Probe a clear bed area to re-establish true Z on recovery?\n\nNeeds a probe; safe on screw Z. (Currently: ${up_lbl})"; then
+                    set_mac variable_use_probe 1
+                else
+                    set_mac variable_use_probe 0
+                fi;;
+            *) return 0;;
+        esac
+    done
+}
+
+notify_menu() {
+    while true; do
+        local ch; ch="$(gd notify none)"
+        local c
+        c="$(ui_menu "Notifications" "Channel: ${ch}" \
+            telegram "Use Telegram" \
+            ntfy     "Use ntfy" \
+            none     "Disable notifications" \
+            test     "Send a test notification" \
+            back     "‹ Back")" || return 0
+        case "${c}" in
+            telegram)
+                local tok chat
+                tok="$(ui_input "Telegram" "Bot token (from @BotFather):" "$(get_rp notify_telegram_token)")" || continue
+                chat="$(ui_input "Telegram" "Chat id (numeric):" "$(get_rp notify_telegram_chat)")" || continue
+                set_rp notify telegram
+                set_rp notify_telegram_token "${tok}"
+                set_rp notify_telegram_chat "${chat}";;
+            ntfy)
+                local topic url
+                topic="$(ui_input "ntfy" "Topic (subscribe to it in the app):" "$(get_rp notify_ntfy_topic)")" || continue
+                url="$(ui_input "ntfy" "Server URL:" "$(gd notify_ntfy_url https://ntfy.sh)")" || continue
+                set_rp notify ntfy
+                set_rp notify_ntfy_topic "${topic}"
+                set_rp notify_ntfy_url "${url}";;
+            none) set_rp notify none;;
+            test) test_notify;;
+            *) return 0;;
+        esac
+    done
+}
+
+test_notify() {
+    local ch; ch="$(gd notify none)"
+    [ "${ch}" = none ] && { ui_msg "Test" "Notifications are disabled."; return; }
+    command -v curl >/dev/null 2>&1 || { ui_msg "Test" "curl not found."; return; }
+    local ok=1
+    if [ "${ch}" = telegram ]; then
+        curl -fsS "https://api.telegram.org/bot$(get_rp notify_telegram_token)/sendMessage" \
+            --data-urlencode "chat_id=$(get_rp notify_telegram_chat)" \
+            --data-urlencode "text=repower: test notification" >/dev/null 2>&1 && ok=0
+    elif [ "${ch}" = ntfy ]; then
+        curl -fsS -d "repower: test notification" \
+            "$(gd notify_ntfy_url https://ntfy.sh)/$(get_rp notify_ntfy_topic)" >/dev/null 2>&1 && ok=0
+    fi
+    [ "${ok}" = 0 ] && ui_msg "Test" "Sent — check your device." \
+                    || ui_msg "Test" "Failed to send. Check token/topic and network."
+}
+
+language_menu() {
+    local cur; cur="$(gd language en)"
+    local c
+    c="$(ui_menu "Language" "Dialog & notification language (current: ${cur}):" \
+        en "English" ru "Русский" back "‹ Back")" || return 0
+    case "${c}" in en|ru) set_rp language "${c}";; esac
+}
+
+status_screen() {
+    local txt
+    txt="Klipper:    ${KLIPPER_PATH}
+Config:     ${ACTIVE_CFG}
+Module:     ${EXTRAS_LINK}
+
+language:        $(gd language en)
+save_interval:   $(gd save_interval 1.0) s
+notify:          $(gd notify none)
+use_probe:       $(gm variable_use_probe 1)
+purge / prime:   $(gm variable_purge 8) / $(gm variable_prime 0) mm
+z_hop / travel:  $(gm variable_z_hop 5) / $(gm variable_travel_speed 150)
+park_x / park_y: $(gm variable_park_x -1) / $(gm variable_park_y -1)
+
+Pending restart: $( [ "${NEED_RESTART}" = 1 ] && echo yes || echo no )"
+    ui_msg "Current configuration" "${txt}"
 }
 
 do_uninstall() {
     resolve_paths
-    log "Uninstalling..."
+    ui_yesno "Uninstall" "Remove the repower module link and restart Klipper?\n\n(${PLUGIN}.cfg and printer.cfg/moonraker entries are left in place.)" \
+        || return 0
     [ -L "${EXTRAS_LINK}" ] && { rm -f "${EXTRAS_LINK}"; log "Removed module link"; }
-    warn "Left ${PLUGIN}.cfg and printer.cfg/moonraker.conf entries in place."
-    warn "Remove [include ${PLUGIN}.cfg], [force_move] and"
-    warn "[update_manager ${PLUGIN}] by hand if you no longer need them."
+    warn "Left ${PLUGIN}.cfg + [include]/[force_move]/[update_manager] entries."
     restart_service
-    log "Uninstall done."
+    ui_msg "Uninstall" "Done. Module unlinked and Klipper restarted."
 }
 
-# --- Entry point -------------------------------------------------------------
-INTERACTIVE=1
-[ -t 0 ] && [ -t 1 ] || INTERACTIVE=0
+main_menu() {
+    while true; do
+        local rflag=""; [ "${NEED_RESTART}" = 1 ] && rflag="  (changes pending)"
+        local c
+        c="$(ui_menu "Main menu${rflag}" "repower control panel" \
+            settings  "Recovery settings & modes" \
+            notify    "Notifications" \
+            language  "Language" \
+            status    "Show current configuration" \
+            apply     "Apply changes (restart Klipper)" \
+            reinstall "Reinstall / repair links" \
+            uninstall "Uninstall" \
+            quit      "Exit")" || { maybe_restart; return 0; }
+        case "${c}" in
+            settings)  settings_menu;;
+            notify)    notify_menu;;
+            language)  language_menu;;
+            status)    status_screen;;
+            apply)     restart_service;;
+            reinstall) core_install; ui_msg "Reinstall" "Links and config verified.";;
+            uninstall) do_uninstall;;
+            quit)      maybe_restart; return 0;;
+        esac
+    done
+}
+
+# =============================================================================
+#  Entry point
+# =============================================================================
+INTERACTIVE=1; { [ -t 0 ] && [ -t 1 ]; } || INTERACTIVE=0
 
 case "${1:-}" in
-    --uninstall|-u) do_uninstall ;;
-    --reconfigure)  do_reconfigure ;;
-    --non-interactive) do_install 0 ;;
-    ""|--install)   do_install "${INTERACTIVE}" ;;
-    -h|--help)      grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//' ;;
+    --uninstall|-u)    do_uninstall ;;
+    --non-interactive) core_install; restart_service; log "Done." ;;
+    --menu|--reconfigure)
+        [ "${INTERACTIVE}" = 1 ] || { err "No TTY for the menu."; exit 1; }
+        banner; core_install; main_menu ;;
+    ""|--install)
+        if [ "${INTERACTIVE}" = 1 ]; then banner; core_install; main_menu
+        else core_install; restart_service; log "Done."; fi ;;
+    -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//' ;;
     *) err "Unknown option: $1"; exit 1 ;;
 esac

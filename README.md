@@ -35,34 +35,46 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Установщик **интерактивный** (меню на whiptail, fallback на простые вопросы).
-При первом запуске он проведёт через настройку:
-
-1. **Язык** меню и диалогов (RU/EN);
-2. **Интервал снапшотов** и **длину прочистки**;
-3. **Уведомления** — Telegram / ntfy / выключено (+ тест-отправка).
-
-И сделает всё остальное автоматически:
+`install.sh` — это **пульт управления** (меню на whiptail, fallback на простые
+вопросы). При запуске он автоматически:
 
 - находит Klipper и каталог конфигов (или из `KLIPPER_PATH` / `KLIPPER_CONFIG`);
 - слинкует `repower.py` в `klippy/extras/`;
 - установит **копию** `repower.cfg` в каталог конфигов (твои настройки не
-  перетираются при `git pull`) и впишет в неё выбранные значения;
+  перетираются при `git pull`);
 - добавит `[include repower.cfg]` и `[force_move] enable_force_move: True`
   **перед** блоком `#*# SAVE_CONFIG` (калибровки целы);
 - пропишет `[update_manager repower]` в `moonraker.conf` — обновления из UI;
-- перезапустит Klipper.
 
-Полезные режимы:
+а затем откроет **главное меню**:
+
+```
+ Main menu
+   Recovery settings & modes   ← интервал, purge/prime, Z hop, travel,
+                                 park X/Y, вкл/выкл пробы Z
+   Notifications               ← Telegram / ntfy / выкл + тест
+   Language                    ← en / ru
+   Show current configuration  ← текущие значения и путь
+   Apply changes (restart)     ← применить (рестарт Klipper)
+   Reinstall / repair links
+   Uninstall
+   Exit
+```
+
+В пунктах меню показаны **текущие значения**; изменения пишутся в твой
+`repower.cfg` (секции `[repower]` и `[gcode_macro REPOWER_RECOVER]`), не трогая
+блок `#*# SAVE_CONFIG`. После изменений меню предложит перезапустить Klipper.
+
+Флаги:
 
 ```bash
-./install.sh --reconfigure      # заново пройти настройку (язык/интервал/уведомления)
-./install.sh --non-interactive  # без вопросов, со значениями по умолчанию
+./install.sh --menu             # принудительно открыть меню
+./install.sh --non-interactive  # тихо установить/починить (без меню)
 ./install.sh --uninstall        # снять симлинк модуля и перезапустить
 ```
 
 > При обновлении через Moonraker скрипт запускается **без TTY** и автоматически
-> пропускает все вопросы — просто чинит установку, настройки сохраняются.
+> работает в тихом режиме (без меню) — просто чинит установку, настройки целы.
 
 ## Как пользоваться
 

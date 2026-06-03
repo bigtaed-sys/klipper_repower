@@ -106,6 +106,15 @@ class Repower:
         self.purge = config.getfloat('purge', 8., minval=0.)
         self.purge_retract = config.getfloat('purge_retract', 0.8, minval=0.)
         self.prime = config.getfloat('prime', 0., minval=0.)
+        # Purge style: 'line' draws a thin prime line in a clear area (clean,
+        # easy to remove); 'blob' just extrudes in place.
+        self.purge_mode = config.getchoice(
+            'purge_mode', {'line': 'line', 'blob': 'blob'}, 'line')
+        self.purge_line_length = config.getfloat(
+            'purge_line_length', 40., above=0.)
+        self.purge_line_z = config.getfloat('purge_line_z', 0.3, above=0.)
+        self.purge_line_speed = config.getfloat(
+            'purge_line_speed', 15., above=0.)
         self.park_x = config.getfloat('park_x', -1.)
         self.park_y = config.getfloat('park_y', -1.)
 
@@ -291,7 +300,8 @@ class Repower:
         # Returns dict(probe_ok, px, py, park_ok, kx, ky). probe_ok also needs
         # a probe object; park_ok only needs the geometry.
         res = {'probe_ok': False, 'px': 0., 'py': 0.,
-               'park_ok': False, 'kx': 0., 'ky': 0.}
+               'park_ok': False, 'kx': 0., 'ky': 0.,
+               'line_ok': False, 'ex': 0., 'ey': 0.}
         th = self.printer.lookup_object('toolhead', None)
         if th is None:
             return res
@@ -314,18 +324,28 @@ class Repower:
         if bbox:
             minx, miny, maxx, maxy = bbox
             cx, cy = (minx + maxx) / 2., (miny + maxy) / 2.
-            # (gap, probe point beside model, park corner at the bed edge)
+            length = self.purge_line_length
+            # (gap, probe point beside model, park corner, purge-line dir)
             candidates = [
-                (bxmax - maxx, (maxx + clr, cy), (bxmax - edge, bymin + edge)),
-                (minx - bxmin, (minx - clr, cy), (bxmin + edge, bymin + edge)),
-                (bymax - maxy, (cx, maxy + clr), (bxmin + edge, bymax - edge)),
-                (miny - bymin, (cx, miny - clr), (bxmin + edge, bymin + edge)),
+                (bxmax - maxx, (maxx + clr, cy),
+                 (bxmax - edge, bymin + edge), (0., 1.)),   # right, line +Y
+                (minx - bxmin, (minx - clr, cy),
+                 (bxmin + edge, bymin + edge), (0., 1.)),   # left,  line +Y
+                (bymax - maxy, (cx, maxy + clr),
+                 (bxmin + edge, bymax - edge), (1., 0.)),   # back,  line +X
+                (miny - bymin, (cx, miny - clr),
+                 (bxmin + edge, bymin + edge), (1., 0.)),   # front, line +X
             ]
             candidates.sort(key=lambda c: c[0], reverse=True)
-            gap, probe_pt, corner = candidates[0]
+            gap, probe_pt, corner, (dx, dy) = candidates[0]
             if gap >= clr:
                 res['px'], res['py'] = clamp(*probe_pt)
-                res['kx'], res['ky'] = clamp(*corner)
+                kx, ky = clamp(*corner)
+                res['kx'], res['ky'] = kx, ky
+                # Purge line runs along the clear bed edge from the corner.
+                res['ex'], res['ey'] = clamp(kx + dx * length,
+                                             ky + dy * length)
+                res['line_ok'] = True
                 geom_ok = True
 
         if not geom_ok and self.recovery_probe_x >= 0. \
@@ -537,6 +557,14 @@ class Repower:
             'purge': self.purge, 'purge_retract': self.purge_retract,
             'prime': self.prime,
             'park_x': park_x, 'park_y': park_y,
+            # Purge-line drawing (clean prime line in a clear area). Only
+            # offered for the auto corner, not a manually fixed park spot.
+            'purge_mode': self.purge_mode,
+            'purge_line_ok': (g['line_ok']
+                              and not (self.park_x >= 0. and self.park_y >= 0.)),
+            'purge_x1': round(g['ex'], 2), 'purge_y1': round(g['ey'], 2),
+            'purge_line_z': self.purge_line_z,
+            'purge_line_speed': self.purge_line_speed,
             'file_name': st.get('file_name', ''),
             'file_position': fpos,
             'file_size': fsize,
@@ -588,6 +616,14 @@ class Repower:
                 why = "no safe probe point found"
             zline = ("Z method: TRUST saved Z  (probe skipped: %s)\n"
                      " heat/purge at: %s" % (why, heat))
+        if self.purge <= 0.:
+            pline = "purge: off"
+        elif self.purge_mode == 'line' and g['line_ok'] \
+                and not (self.park_x >= 0. and self.park_y >= 0.):
+            pline = ("purge: line %.0fmm -> X%.1f Y%.1f at Z%.2f"
+                     % (self.purge, g['ex'], g['ey'], self.purge_line_z))
+        else:
+            pline = "purge: blob %.0fmm in place" % (self.purge,)
         gcmd.respond_info(
             "repower: recoverable print\n"
             " file: %s\n"
@@ -597,12 +633,13 @@ class Repower:
             " fan: %.0f%%\n"
             " model bbox: %s\n"
             " use_probe=%s  probe_present=%s  probe_ok=%s\n"
+            " %s\n"
             " %s"
             % (st.get('file_name', '?'), st.get('file_position', 0),
                st.get('x', 0.), st.get('y', 0.), st.get('z', 0.),
                st.get('extruder_temp', 0.), st.get('bed_temp', 0.),
                st.get('fan_speed', 0.) * 100., bbox,
-               use_probe, probe_present, probe_ok, zline))
+               use_probe, probe_present, probe_ok, zline, pline))
 
     cmd_REPOWER_PROMPT_help = (
         "Show the Mainsail/Fluidd recovery dialog for the saved print")

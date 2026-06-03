@@ -301,7 +301,7 @@ class Repower:
         # a probe object; park_ok only needs the geometry.
         res = {'probe_ok': False, 'px': 0., 'py': 0.,
                'park_ok': False, 'kx': 0., 'ky': 0.,
-               'line_ok': False, 'ex': 0., 'ey': 0.}
+               'line_ok': False, 'lx': 0., 'ly': 0., 'ex': 0., 'ey': 0.}
         th = self.printer.lookup_object('toolhead', None)
         if th is None:
             return res
@@ -342,9 +342,14 @@ class Repower:
                 res['px'], res['py'] = clamp(*probe_pt)
                 kx, ky = clamp(*corner)
                 res['kx'], res['ky'] = kx, ky
-                # Purge line runs along the clear bed edge from the corner.
-                res['ex'], res['ey'] = clamp(kx + dx * length,
-                                             ky + dy * length)
+                # Purge line runs along the clear edge, but starts offset from
+                # the heat/park corner so the heat-up ooze (left at the corner)
+                # is not on the line.
+                offset = 15.
+                lx, ly = kx + dx * offset, ky + dy * offset
+                res['lx'], res['ly'] = clamp(lx, ly)
+                res['ex'], res['ey'] = clamp(lx + dx * length,
+                                             ly + dy * length)
                 res['line_ok'] = True
                 geom_ok = True
 
@@ -534,7 +539,7 @@ class Repower:
         else:
             g = {'probe_ok': False, 'px': 0., 'py': 0.,
                  'park_ok': False, 'kx': 0., 'ky': 0.,
-                 'line_ok': False, 'ex': 0., 'ey': 0.}
+                 'line_ok': False, 'lx': 0., 'ly': 0., 'ex': 0., 'ey': 0.}
         # Effective park/heat spot: configured value wins, else the auto bed
         # corner (so heat-up & purge happen at a corner, not at the probe pt).
         if self.park_x >= 0. and self.park_y >= 0.:
@@ -563,6 +568,7 @@ class Repower:
             'purge_mode': self.purge_mode,
             'purge_line_ok': (g['line_ok']
                               and not (self.park_x >= 0. and self.park_y >= 0.)),
+            'purge_x0': round(g['lx'], 2), 'purge_y0': round(g['ly'], 2),
             'purge_x1': round(g['ex'], 2), 'purge_y1': round(g['ey'], 2),
             'purge_line_z': self.purge_line_z,
             'purge_line_speed': self.purge_line_speed,

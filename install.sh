@@ -3,8 +3,9 @@
 #  repower — installer & control panel (power-loss recovery for Klipper)
 #
 #  Run with no arguments for the interactive menu (install, change settings &
-#  modes, notifications, language, status, uninstall). Without a TTY (e.g.
-#  Moonraker auto-update) it silently installs/repairs.
+#  modes, notifications, language, status, uninstall). Modern TUI via gum
+#  (falls back to whiptail, then plain text). Without a TTY (e.g. Moonraker
+#  auto-update) it silently installs/repairs.
 #
 #  Flags:
 #     ./install.sh                 # menu (or silent repair without a TTY)
@@ -138,58 +139,109 @@ t() {
 }
 
 # =============================================================================
-#  UI primitives (whiptail when available, plain prompts otherwise)
+#  UI primitives — backend: gum (prettiest) > whiptail > plain text
 # =============================================================================
-HAS_WHIPTAIL=0
-command -v whiptail >/dev/null 2>&1 && HAS_WHIPTAIL=1
+UI_BACKEND="plain"
+detect_ui() {
+    if command -v gum >/dev/null 2>&1; then UI_BACKEND="gum"
+    elif command -v whiptail >/dev/null 2>&1; then UI_BACKEND="whiptail"
+    else UI_BACKEND="plain"; fi
+}
+detect_ui
+
+# gum theme (charm.sh). 212 = pink, 99 = purple.
+export GUM_CHOOSE_CURSOR_FOREGROUND="212"
+export GUM_CHOOSE_HEADER_FOREGROUND="99"
+export GUM_INPUT_CURSOR_FOREGROUND="212"
+export GUM_INPUT_PROMPT_FOREGROUND="99"
+export GUM_CONFIRM_SELECTED_BACKGROUND="212"
+
+install_gum() {
+    command -v curl >/dev/null 2>&1 || { warn "curl needed to install gum."; return 1; }
+    log "Installing gum (charm.sh apt repo)..."
+    sudo mkdir -p /etc/apt/keyrings || return 1
+    curl -fsSL https://repo.charm.sh/apt/gpg.key \
+        | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg || return 1
+    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
+        | sudo tee /etc/apt/sources.list.d/charm.list >/dev/null || return 1
+    sudo apt update -y >/dev/null 2>&1 && sudo apt install -y gum || return 1
+    command -v gum >/dev/null 2>&1
+}
+maybe_install_gum() {
+    [ "${UI_BACKEND}" = "gum" ] && return 0
+    [ "${INTERACTIVE:-0}" = 1 ] || return 0
+    command -v gum >/dev/null 2>&1 && { detect_ui; return 0; }
+    if ui_yesno "Nicer UI" "Install 'gum' for a modern, prettier interface? (small download via apt)"; then
+        install_gum && detect_ui || warn "gum install failed; using ${UI_BACKEND}."
+    fi
+}
 
 banner() {
-    printf '\033[1;36m'
-    cat <<'B'
-   ┌──────────────────────────────────────────────────┐
-   │   repower  ·  power-loss recovery for Klipper      │
-   └──────────────────────────────────────────────────┘
-B
-    printf '\033[0m\n'
+    if [ "${UI_BACKEND}" = "gum" ]; then
+        gum style --border double --align center --width 54 --padding "1 2" \
+            --margin "1 0" --foreground 212 --border-foreground 99 \
+            "repower" "power-loss recovery for Klipper"
+    else
+        printf '\033[1;36m\n   repower  ·  power-loss recovery for Klipper\n\033[0m\n'
+    fi
 }
 
 ui_menu() {   # title text  tag1 item1 [...]  -> prints chosen tag
     local title="$1" text="$2"; shift 2
-    if [ "${HAS_WHIPTAIL}" = 1 ]; then
-        whiptail --backtitle "${BT}" --title "${title}" --notags \
-            --menu "${text}" 20 76 10 "$@" 3>&1 1>&2 2>&3
-    else
-        echo "== ${title} ==" >&2; echo "${text}" >&2
-        while [ $# -gt 0 ]; do echo "   $1) $2" >&2; shift 2; done
-        local a; read -r -p "> " a </dev/tty || true; echo "${a}"
-    fi
+    case "${UI_BACKEND}" in
+        gum)
+            local tags=() labels=() chosen i
+            while [ $# -gt 0 ]; do tags+=("$1"); labels+=("$2"); shift 2; done
+            chosen="$(printf '%s\n' "${labels[@]}" \
+                | gum choose --header "${title} — ${text}" --height 14)" \
+                || return 1
+            [ -n "${chosen}" ] || return 1
+            for i in "${!labels[@]}"; do
+                [ "${labels[$i]}" = "${chosen}" ] && { echo "${tags[$i]}"; return 0; }
+            done
+            return 1 ;;
+        whiptail)
+            whiptail --backtitle "${BT}" --title "${title}" --notags \
+                --menu "${text}" 20 76 10 "$@" 3>&1 1>&2 2>&3 ;;
+        *)
+            echo "== ${title} ==" >&2; echo "${text}" >&2
+            while [ $# -gt 0 ]; do echo "   $1) $2" >&2; shift 2; done
+            local a; read -r -p "> " a </dev/tty || true; echo "${a}" ;;
+    esac
 }
 ui_input() {  # title text default  -> prints value
     local title="$1" text="$2" def="$3"
-    if [ "${HAS_WHIPTAIL}" = 1 ]; then
-        whiptail --backtitle "${BT}" --title "${title}" \
-            --inputbox "${text}" 11 76 "${def}" 3>&1 1>&2 2>&3
-    else
-        local a; read -r -p "${text} [${def}]: " a </dev/tty || true
-        echo "${a:-$def}"
-    fi
+    case "${UI_BACKEND}" in
+        gum)  gum input --header "${title}: ${text}" --value "${def}" \
+                  --width 60 || return 1 ;;
+        whiptail) whiptail --backtitle "${BT}" --title "${title}" \
+                  --inputbox "${text}" 11 76 "${def}" 3>&1 1>&2 2>&3 ;;
+        *)    local a; read -r -p "${text} [${def}]: " a </dev/tty || true
+              echo "${a:-$def}" ;;
+    esac
 }
 ui_yesno() {  # title text  -> 0 yes / 1 no
     local title="$1" text="$2"
-    if [ "${HAS_WHIPTAIL}" = 1 ]; then
-        whiptail --backtitle "${BT}" --title "${title}" --yesno "${text}" 12 76
-    else
-        local a; read -r -p "${text} [y/N]: " a </dev/tty || true
-        [[ "${a}" =~ ^[Yy] ]]
-    fi
+    case "${UI_BACKEND}" in
+        gum)  gum confirm "${title}
+
+${text}" ;;
+        whiptail) whiptail --backtitle "${BT}" --title "${title}" \
+                  --yesno "${text}" 12 76 ;;
+        *)    local a; read -r -p "${text} [y/N]: " a </dev/tty || true
+              [[ "${a}" =~ ^[Yy] ]] ;;
+    esac
 }
 ui_msg() {    # title text
-    if [ "${HAS_WHIPTAIL}" = 1 ]; then
-        whiptail --backtitle "${BT}" --title "${1}" --msgbox "${2}" 20 76
-    else
-        echo "== ${1} ==" >&2; printf '%s\n' "${2}" >&2
-        read -r -p "[Enter]" _ </dev/tty || true
-    fi
+    case "${UI_BACKEND}" in
+        gum)  gum style --border rounded --padding "1 2" --border-foreground 99 \
+                  "${1}" "" "${2}"
+              gum input --placeholder "Press Enter to continue" >/dev/null 2>&1 \
+                  || true ;;
+        whiptail) whiptail --backtitle "${BT}" --title "${1}" --msgbox "${2}" 20 76 ;;
+        *)    echo "== ${1} ==" >&2; printf '%s\n' "${2}" >&2
+              read -r -p "[Enter]" _ </dev/tty || true ;;
+    esac
 }
 
 # =============================================================================
@@ -628,9 +680,10 @@ case "${1:-}" in
     --non-interactive) core_install; restart_service; log "Done." ;;
     --menu|--reconfigure)
         [ "${INTERACTIVE}" = 1 ] || { err "No TTY for the menu."; exit 1; }
-        banner; core_install; main_menu ;;
+        maybe_install_gum; banner; core_install; main_menu ;;
     ""|--install)
-        if [ "${INTERACTIVE}" = 1 ]; then banner; core_install; main_menu
+        if [ "${INTERACTIVE}" = 1 ]; then
+            maybe_install_gum; banner; core_install; main_menu
         else core_install; restart_service; log "Done."; fi ;;
     -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//' ;;
     *) err "Unknown option: $1"; exit 1 ;;

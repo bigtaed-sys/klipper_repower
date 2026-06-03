@@ -283,57 +283,67 @@ class Repower:
                     pass
         return 0.
 
-    def _probe_point(self, eventtime):
-        # Decide where (if anywhere) it is safe to probe the bare bed:
-        #   1) auto: a point beside the model bounding box with clearance,
-        #   2) else a configured fixed point (if it clears the model),
-        #   3) else give up -> caller trusts the saved Z.
-        # Returns (ok, x, y).
-        if self.printer.lookup_object('probe', None) is None:
-            return (False, 0., 0.)
+    def _recovery_geometry(self, eventtime):
+        # Work out, from the model bounding box and bed limits:
+        #   probe point  — beside the model with `clearance` (precise Z),
+        #   park corner   — at the bed edge on the same clear side, far from
+        #                   the model (where heat-up ooze / purge should go).
+        # Returns dict(probe_ok, px, py, park_ok, kx, ky). probe_ok also needs
+        # a probe object; park_ok only needs the geometry.
+        res = {'probe_ok': False, 'px': 0., 'py': 0.,
+               'park_ok': False, 'kx': 0., 'ky': 0.}
         th = self.printer.lookup_object('toolhead', None)
         if th is None:
-            return (False, 0., 0.)
+            return res
         ts = th.get_status(eventtime)
         amin = ts.get('axis_minimum')
         amax = ts.get('axis_maximum')
         if not amin or not amax:
-            return (False, 0., 0.)
+            return res
         bxmin, bymin, bxmax, bymax = amin[0], amin[1], amax[0], amax[1]
         clr = self.recovery_clearance
+        edge = 5.        # keep the heat corner this far from the bed edge
         bbox = (self.state or {}).get('bbox')
+        probe_present = self.printer.lookup_object('probe', None) is not None
 
         def clamp(px, py):
             return (min(max(px, bxmin + 1.), bxmax - 1.),
                     min(max(py, bymin + 1.), bymax - 1.))
 
+        geom_ok = False
         if bbox:
             minx, miny, maxx, maxy = bbox
             cx, cy = (minx + maxx) / 2., (miny + maxy) / 2.
-            # (gap on this side, point placed `clr` beyond the model edge)
+            # (gap, probe point beside model, park corner at the bed edge)
             candidates = [
-                (bxmax - maxx, (maxx + clr, cy)),   # right
-                (minx - bxmin, (minx - clr, cy)),   # left
-                (bymax - maxy, (cx, maxy + clr)),   # back
-                (miny - bymin, (cx, miny - clr)),   # front
+                (bxmax - maxx, (maxx + clr, cy), (bxmax - edge, bymin + edge)),
+                (minx - bxmin, (minx - clr, cy), (bxmin + edge, bymin + edge)),
+                (bymax - maxy, (cx, maxy + clr), (bxmin + edge, bymax - edge)),
+                (miny - bymin, (cx, miny - clr), (bxmin + edge, bymin + edge)),
             ]
             candidates.sort(key=lambda c: c[0], reverse=True)
-            gap, (px, py) = candidates[0]
+            gap, probe_pt, corner = candidates[0]
             if gap >= clr:
-                px, py = clamp(px, py)
-                return (True, px, py)
+                res['px'], res['py'] = clamp(*probe_pt)
+                res['kx'], res['ky'] = clamp(*corner)
+                geom_ok = True
 
-        # Fixed fallback point.
-        if self.recovery_probe_x >= 0. and self.recovery_probe_y >= 0.:
+        if not geom_ok and self.recovery_probe_x >= 0. \
+                and self.recovery_probe_y >= 0.:
             px, py = self.recovery_probe_x, self.recovery_probe_y
+            over = False
             if bbox:
                 minx, miny, maxx, maxy = bbox
-                if (minx - clr <= px <= maxx + clr
-                        and miny - clr <= py <= maxy + clr):
-                    return (False, 0., 0.)   # fixed point sits over the model
-            px, py = clamp(px, py)
-            return (True, px, py)
-        return (False, 0., 0.)
+                over = (minx - clr <= px <= maxx + clr
+                        and miny - clr <= py <= maxy + clr)
+            if not over:
+                res['px'], res['py'] = clamp(px, py)
+                res['kx'], res['ky'] = res['px'], res['py']
+                geom_ok = True
+
+        res['park_ok'] = geom_ok
+        res['probe_ok'] = geom_ok and probe_present
+        return res
 
     # ------------------------------------------------------------ disk state
     def _load_state(self):
@@ -500,16 +510,25 @@ class Repower:
         fpos = st.get('file_position', 0) or 0
         progress = round(100. * fpos / fsize, 1) if fsize else 0.
         if self.recoverable:
-            probe_ok, probe_x, probe_y = self._probe_point(eventtime)
+            g = self._recovery_geometry(eventtime)
         else:
-            probe_ok, probe_x, probe_y = (False, 0., 0.)
+            g = {'probe_ok': False, 'px': 0., 'py': 0.,
+                 'park_ok': False, 'kx': 0., 'ky': 0.}
+        # Effective park/heat spot: configured value wins, else the auto bed
+        # corner (so heat-up & purge happen at a corner, not at the probe pt).
+        if self.park_x >= 0. and self.park_y >= 0.:
+            park_x, park_y = self.park_x, self.park_y
+        elif g['park_ok']:
+            park_x, park_y = round(g['kx'], 2), round(g['ky'], 2)
+        else:
+            park_x, park_y = self.park_x, self.park_y
         return {
             'recoverable': self.recoverable,
             'language': self.language,
             # Probe-based Z recovery fields read by the REPOWER_RECOVER macro.
-            'probe_ok': probe_ok,
-            'probe_x': round(probe_x, 2),
-            'probe_y': round(probe_y, 2),
+            'probe_ok': g['probe_ok'],
+            'probe_x': round(g['px'], 2),
+            'probe_y': round(g['py'], 2),
             'probe_z_offset': round(self._probe_z_offset, 4),
             # Recovery motion tunables (defaults for the macro; per-call
             # params still override them).
@@ -517,7 +536,7 @@ class Repower:
             'z_hop': self.z_hop, 'travel_speed': self.travel_speed,
             'purge': self.purge, 'purge_retract': self.purge_retract,
             'prime': self.prime,
-            'park_x': self.park_x, 'park_y': self.park_y,
+            'park_x': park_x, 'park_y': park_y,
             'file_name': st.get('file_name', ''),
             'file_position': fpos,
             'file_size': fsize,
@@ -541,15 +560,23 @@ class Repower:
         eventtime = self.reactor.monotonic()
         # Probe-based Z recovery diagnostics (why it will / will not run).
         probe_present = self.printer.lookup_object('probe', None) is not None
-        probe_ok, px, py = self._probe_point(eventtime)
+        g = self._recovery_geometry(eventtime)
+        probe_ok, px, py = g['probe_ok'], g['px'], g['py']
         bbox = st.get('bbox')
         macro = self.printer.lookup_object(
             'gcode_macro REPOWER_RECOVER', None)
         use_probe = (macro.get_status(eventtime).get('use_probe')
                      if macro is not None else '?')
+        if self.park_x >= 0. and self.park_y >= 0.:
+            heat = "config X%.1f Y%.1f" % (self.park_x, self.park_y)
+        elif g['park_ok']:
+            heat = "auto corner X%.1f Y%.1f" % (g['kx'], g['ky'])
+        else:
+            heat = "in place (homed corner)"
         if probe_ok:
-            zline = "Z method: PROBE at X%.1f Y%.1f (offset %.3f)" % (
-                px, py, self._probe_z_offset)
+            zline = ("Z method: PROBE at X%.1f Y%.1f (offset %.3f)\n"
+                     " heat/purge at: %s" % (px, py, self._probe_z_offset,
+                                             heat))
         else:
             if not probe_present:
                 why = "no [probe]/[bltouch] object"
@@ -559,7 +586,8 @@ class Repower:
                 why = "no clear area and no recovery_probe_x/y set"
             else:
                 why = "no safe probe point found"
-            zline = "Z method: TRUST saved Z  (probe skipped: %s)" % (why,)
+            zline = ("Z method: TRUST saved Z  (probe skipped: %s)\n"
+                     " heat/purge at: %s" % (why, heat))
         gcmd.respond_info(
             "repower: recoverable print\n"
             " file: %s\n"

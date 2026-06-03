@@ -1,253 +1,255 @@
-# repower — подробная документация
+# repower — full documentation
 
-Краткое описание и быстрый старт — в [README.md](README.md). Здесь собрано
-всё детальное: установщик, команды, параметры, проба Z, линия прочистки,
-уведомления, диалоги и принцип работы.
+**English** · [Русский](DOCS_RU.md)
 
-Заточено под **CoreXY + проба**, но конфиг универсальный — при другой
-кинематике достаточно подправить макрос в `repower_macros.cfg`.
+Overview and quick start are in [README.md](README.md). This page collects all
+the detail: installer, commands, parameters, probe-based Z, purge line,
+notifications, dialogs and how it works.
+
+Tuned for **CoreXY + probe**, but the config is generic — for other kinematics
+just adjust the macro in `repower_macros.cfg`.
 
 ---
 
-## Установщик / пульт управления
+## Installer / control panel
 
-`install.sh` — интерактивный пульт с современным TUI. Интерфейс рисуется через
-**`gum`** (charm.sh); при первом запуске установщик предложит поставить его
-одной командой. Если откажешься или нет интернета — откат на **whiptail**,
-затем на простые текстовые вопросы. Меню **двуязычное (RU/EN)**.
+`install.sh` is an interactive control panel with a modern TUI rendered via
+**`gum`** (charm.sh); on first run it offers to install gum with one command.
+If you decline or have no internet it falls back to **whiptail**, then to plain
+text prompts. The menu is **bilingual (EN/RU)**.
 
-При запуске он автоматически:
+On launch it automatically:
 
-- находит Klipper и каталог конфигов (или из `KLIPPER_PATH` / `KLIPPER_CONFIG`);
-- слинкует `repower.py` в `klippy/extras/`;
-- **слинкует** `repower_macros.cfg` (логика макросов — авто-обновляется при
-  `git pull` / Moonraker, править не нужно);
-- установит **копию** `repower.cfg` (только настройки `[repower]`) — твои
-  значения не перетираются обновлением; старый монолитный конфиг **мигрирует**
-  автоматически (тюнинги переносятся, макросы выносятся, бэкап `.bak`);
-- при обновлении **дописывает новые опции** (как закомментированные подсказки),
-  не трогая уже выставленные значения;
-- добавит `[include repower.cfg]`, `[include repower_macros.cfg]` и
-  `[force_move] enable_force_move: True` **перед** блоком `#*# SAVE_CONFIG`;
-- пропишет `[update_manager repower]` в `moonraker.conf` — обновления из UI.
+- finds Klipper and the config dir (or uses `KLIPPER_PATH` / `KLIPPER_CONFIG`);
+- symlinks `repower.py` into `klippy/extras/`;
+- **symlinks** `repower_macros.cfg` (macro logic — auto-updates on
+  `git pull` / Moonraker, no need to edit);
+- installs a **copy** of `repower.cfg` (the `[repower]` settings only) — your
+  values are never overwritten by updates; an old monolithic config is
+  **migrated** automatically (tunables carried over, macros split out, `.bak`);
+- on update, **appends new options** (as commented hints) without touching
+  values you already set;
+- adds `[include repower.cfg]`, `[include repower_macros.cfg]` and
+  `[force_move] enable_force_move: True` **before** the `#*# SAVE_CONFIG` block;
+- registers `[update_manager repower]` in `moonraker.conf` for UI updates.
 
-Главное меню:
+Main menu:
 
 ```
  Main menu
-   Recovery settings & modes   ← интервал, purge/prime, Z hop, travel,
-                                 park X/Y, режим прочистки, вкл/выкл пробы Z
-   Notifications               ← Telegram / ntfy / выкл + тест
+   Recovery settings & modes   ← interval, purge/prime, Z hop, travel,
+                                 park X/Y, purge mode, probe-Z on/off
+   Notifications               ← Telegram / ntfy / off + test
    Language                    ← en / ru
-   Show current configuration  ← текущие значения и пути
-   Apply changes (restart)     ← применить (рестарт Klipper)
+   Show current configuration  ← current values and paths
+   Apply changes (restart)     ← apply (restart Klipper)
    Reinstall / repair links
    Uninstall
    Exit
 ```
 
-Флаги:
+Flags:
 
 ```bash
-./install.sh --menu             # принудительно открыть меню
-./install.sh --non-interactive  # тихо установить/починить (без меню)
-./install.sh --uninstall        # снять симлинк модуля и перезапустить
+./install.sh --menu             # force the menu
+./install.sh --non-interactive  # silently install/repair (no menu)
+./install.sh --uninstall        # remove the module symlink and restart
 ```
 
-> При обновлении через Moonraker скрипт запускается **без TTY** и работает в
-> тихом режиме — просто чинит установку, настройки целы.
+> Run by Moonraker (no TTY), the script stays silent — it just repairs the
+> install; your settings are kept.
 
 ---
 
-## Восстановление: что происходит при `REPOWER_RECOVER`
+## Recovery: what `REPOWER_RECOVER` does
 
-1. Стол начинает греться (параллельно).
-2. Z считается удержавшим позицию → подъём сопла (винтовой Z это позволяет).
-3. Хоум X/Y (сопло уже поднято над деталью).
-4. **Проба Z** по чистому участку стола (если включена, см. ниже).
-5. Парковка в **углу стола** и **нагрев сопла** там (стоя на месте).
-6. **Прочистка** (линией или каплей).
-7. Возврат к сохранённой точке, опускание на нужную высоту.
-8. `REPOWER_RESUME` — восстановление режимов/factors/сетки/offset и продолжение
-   файла ровно с сохранённого байта.
+1. Start heating the bed (in parallel).
+2. Trust the (held) Z and lift the nozzle (safe on a lead-screw Z).
+3. Home X/Y (nozzle already lifted off the part).
+4. **Probe Z** on a clear bed area (if enabled, see below).
+5. Park at a **bed corner** and **heat the nozzle** there (stationary).
+6. **Purge** (line or blob).
+7. Travel back to the saved spot and descend to the right height.
+8. `REPOWER_RESUME` — restore modes/factors/mesh/offset and continue the file
+   from the exact saved byte.
 
-Нагрев сопла идёт **только после** подъёма/хоуминга/пробы — поэтому капля при
-нагреве падает в углу, а не на модель.
-
----
-
-## Восстановление Z через пробу
-
-Чтобы не «доверять» тому, что Z удержал высоту, плагин может **измерить
-истинный Z пробой по чистому участку стола** (никогда не над моделью):
-
-1. сопло поднимается, хоумятся X/Y;
-2. плагин выбирает **чистую точку**: **авто** — рядом с bounding box модели
-   (границы копятся во время печати) с зазором `recovery_clearance`; если места
-   нет — **фикс. точка** `recovery_probe_x/y`; если и её нет — **доверие Z**;
-3. `PROBE` по чистому столу → re-референс Z по `z_offset` пробы (ловит даже
-   просадку Z).
-
-Управление: `use_probe` (в `[repower]` или `REPOWER_RECOVER USE_PROBE=0`). Что
-будет применено и выбранную точку показывает `REPOWER_QUERY`.
-
-> Требуется проба (BLTouch/индуктивный) и **винтовой Z**. Для ремённого Z
-> подъём после сбоя менее предсказуем.
+The nozzle reaches temperature **only after** the lift/home/probe, so heat-up
+ooze lands at the corner, not on the model.
 
 ---
 
-## Прочистка: линия или капля
+## Probe-based Z recovery
 
-- **`purge_mode: line`** (по умолчанию): голова паркуется и греется в углу,
-  затем отъезжает к началу линии (со смещением от угла, чтобы капля от нагрева
-  не попала на линию) и рисует **тонкую линию прочистки** вдоль края стола —
-  её видно, она не мешает и легко снимается.
-- **`purge_mode: blob`**: просто выдавить пруток на месте.
-- Если чистого места не нашлось — авто-откат на `blob`.
+Instead of trusting that Z held its height, the plugin can **measure the true
+Z by probing a clear area of the bed** (never over the model):
 
-Параметры: `purge`, `purge_retract`, `purge_line_length`, `purge_line_z`,
+1. the nozzle lifts, X/Y home;
+2. the plugin picks a **clear point**: **auto** — beside the model bounding box
+   (tracked during the print) with `recovery_clearance`; if none fits — a
+   **fixed point** `recovery_probe_x/y`; if neither — **trust Z**;
+3. `PROBE` on the bare bed → re-reference Z by the probe `z_offset` (this even
+   catches a dropped Z).
+
+Control: `use_probe` (in `[repower]` or `REPOWER_RECOVER USE_PROBE=0`).
+`REPOWER_QUERY` shows what will be used and the chosen point.
+
+> Needs a probe (BLTouch/inductive) and a **lead-screw Z**. For a belted Z the
+> post-loss lift is less predictable.
+
+---
+
+## Purge: line or blob
+
+- **`purge_mode: line`** (default): the head parks & heats at the corner, then
+  travels to a line start (offset from the corner so heat-up ooze is not on the
+  line) and draws a **thin prime line** along the bed edge — visible, out of
+  the way, easy to remove.
+- **`purge_mode: blob`**: just extrude in place.
+- If no clear area is found — automatic fallback to `blob`.
+
+Parameters: `purge`, `purge_retract`, `purge_line_length`, `purge_line_z`,
 `purge_line_speed`, `prime`.
 
 ---
 
-## Диалог в Mainsail / Fluidd
+## Dialog in Mainsail / Fluidd
 
-После сбоя при загрузке всплывает окно **«Power-loss recovery»** с кнопками
-**Recover** / **Discard** (через `action:prompt_*`, без секции `[respond]`).
+After a power loss, on boot a **"Power-loss recovery"** dialog pops up with
+**Recover** / **Discard** buttons (via `action:prompt_*`, no `[respond]`
+section needed).
 
-> ⚠️ **Fluidd** показывает диалоги только «вживую». Поэтому плагин
-> пере-показывает окно несколько раз после загрузки
-> (`prompt_retries` × `prompt_interval`), чтобы поймать момент подключения
-> браузера. Кнопка **Close** останавливает повторы (состояние сохраняется —
-> можно восстановить кнопкой макроса `REPOWER_RECOVER` или `REPOWER_PROMPT`).
+> ⚠️ **Fluidd** only renders dialogs received live, so the plugin re-shows the
+> dialog a few times after boot (`prompt_retries` × `prompt_interval`) to catch
+> the browser connecting. **Close** stops the re-shows (state is kept — recover
+> via the `REPOWER_RECOVER` macro button or `REPOWER_PROMPT`).
 
-Также `REPOWER_RECOVER` доступен как кнопка макроса в панели Macros.
+`REPOWER_RECOVER` is also available as a macro button in the Macros panel.
 
 ---
 
-## Push-уведомления
+## Push notifications
 
-Когда после сбоя обнаруживается восстановимая печать, плагин может прислать
-уведомление (в фоне, не блокирует Klipper):
+When a recoverable print is found on boot, the plugin can send a notification
+(in the background, never blocking Klipper):
 
 ```ini
-# Telegram (бот через @BotFather)
+# Telegram (bot via @BotFather)
 [repower]
 notify: telegram
 notify_telegram_token: 123456:ABC-DEF...
 notify_telegram_chat: 111111111
 
-# или ntfy (подписка на тему в приложении)
+# or ntfy (subscribe to the topic in the app)
 [repower]
 notify: ntfy
 notify_ntfy_topic: my-secret-printer-topic
 #notify_ntfy_url: https://ntfy.sh
 ```
 
-Проверка: `REPOWER_NOTIFY_TEST` (или тест в конце настройки в меню).
+Test it: `REPOWER_NOTIFY_TEST` (or the test at the end of the menu setup).
 
 ---
 
-## Команды
+## Commands
 
-| Команда | Назначение |
+| Command | Purpose |
 | --- | --- |
-| `REPOWER_QUERY` | Показать состояние и план восстановления (Z, точка пробы, прочистка) |
-| `REPOWER_PROMPT` | Показать диалог восстановления в Mainsail/Fluidd |
-| `REPOWER_RECOVER` | Полная процедура восстановления |
-| `REPOWER_RESUME` | Низкоуровневая: открыть файл, перемотать на offset, продолжить |
-| `REPOWER_CLEAR` | Удалить сохранённое состояние |
-| `REPOWER_SET_LANGUAGE LANG=ru` | Переключить язык диалогов/уведомлений на лету |
-| `REPOWER_NOTIFY_TEST` | Отправить тестовое push-уведомление |
+| `REPOWER_QUERY` | Show state and the recovery plan (Z, probe point, purge) |
+| `REPOWER_PROMPT` | Show the recovery dialog in Mainsail/Fluidd |
+| `REPOWER_RECOVER` | Full recovery procedure |
+| `REPOWER_RESUME` | Low-level: open the file, seek to the offset, resume |
+| `REPOWER_CLEAR` | Discard the saved state |
+| `REPOWER_SET_LANGUAGE LANG=ru` | Switch dialog/notification language live |
+| `REPOWER_NOTIFY_TEST` | Send a test push notification |
 
-Разовые переопределения параметров в команде:
+Per-call parameter overrides:
 `REPOWER_RECOVER PURGE=12 PRIME=1 USE_PROBE=0 PURGE_MODE=blob`.
 
 ---
 
-## Параметры секции `[repower]`
+## `[repower]` parameters
 
-| Параметр | По умолчанию | Описание |
+| Parameter | Default | Description |
 | --- | --- | --- |
-| `state_path` | `~/printer_data/repower_state.json` | Куда писать снапшот |
-| `save_interval` | `1.0` | Частота снапшотов (сек). Меньше — меньше потерь, чаще запись |
-| `min_z_change` | `0.0` | Снапшот только при изменении Z на N мм (бережёт SD). `0` — каждый интервал |
-| `language` | `en` | Язык диалогов и уведомлений: `en` / `ru` |
-| `use_probe` | `True` | Восстанавливать Z пробой (иначе — доверие сохранённому Z) |
-| `z_hop` | `5` | Подъём по Z перед перемещением (мм) |
-| `travel_speed` | `150` | Скорость перемещения XY (мм/с) |
-| `purge` | `8` | Прочистка прутка после нагрева (мм) |
-| `purge_retract` | `0.8` | Retract после прочистки (мм) |
-| `prime` | `0` | Доп. подача прутка после возврата (мм) |
-| `park_x` / `park_y` | `-1` | Точка нагрева/прочистки. `<0` — авто-угол стола на чистой стороне |
-| `purge_mode` | `line` | `line` — линия прочистки; `blob` — выдавить на месте |
-| `purge_line_length` | `40` | Длина линии прочистки (мм) |
-| `purge_line_z` | `0.3` | Высота линии (мм) |
-| `purge_line_speed` | `15` | Скорость рисования линии (мм/с) |
-| `recovery_clearance` | `15` | Зазор (мм) для авто-точки пробы рядом с моделью |
-| `recovery_probe_x` | `-1` | Фикс. точка пробы X (запас). `<0` — выкл |
-| `recovery_probe_y` | `-1` | Фикс. точка пробы Y |
-| `notify` | `none` | Уведомление о сбое: `none` / `telegram` / `ntfy` |
-| `notify_telegram_token` | — | Токен бота Telegram |
-| `notify_telegram_chat` | — | Telegram chat id (числовой) |
-| `notify_ntfy_topic` | — | Тема ntfy |
-| `notify_ntfy_url` | `https://ntfy.sh` | URL сервера ntfy (для self-hosted) |
-| `prompt_on_startup` | `True` | Показывать диалог восстановления при загрузке |
-| `prompt_retries` | `6` | Сколько раз пере-показать диалог (для Fluidd) |
-| `prompt_interval` | `20.0` | Интервал между показами диалога (сек) |
+| `state_path` | `~/printer_data/repower_state.json` | Where the snapshot is written |
+| `save_interval` | `1.0` | Snapshot rate (s). Lower = less lost, more writes |
+| `min_z_change` | `0.0` | Snapshot only when Z moved ≥ N mm (saves the SD). `0` = every interval |
+| `language` | `en` | Dialog/notification language: `en` / `ru` |
+| `use_probe` | `True` | Re-establish Z by probing (else trust the saved Z) |
+| `z_hop` | `5` | Z lift before moving over the part (mm) |
+| `travel_speed` | `150` | XY travel speed during recovery (mm/s) |
+| `purge` | `8` | Filament purged after re-heating (mm) |
+| `purge_retract` | `0.8` | Retract after purge (mm) |
+| `prime` | `0` | Extra prime after returning to the part (mm) |
+| `park_x` / `park_y` | `-1` | Heat/purge spot. `<0` = auto bed corner on the clear side |
+| `purge_mode` | `line` | `line` — draw a purge line; `blob` — extrude in place |
+| `purge_line_length` | `40` | Purge line length (mm) |
+| `purge_line_z` | `0.3` | Purge line height (mm) |
+| `purge_line_speed` | `15` | Purge line drawing speed (mm/s) |
+| `recovery_clearance` | `15` | Free margin (mm) to place the auto probe point |
+| `recovery_probe_x` | `-1` | Fixed fallback probe point X. `<0` = off |
+| `recovery_probe_y` | `-1` | Fixed fallback probe point Y |
+| `notify` | `none` | Power-loss notification: `none` / `telegram` / `ntfy` |
+| `notify_telegram_token` | — | Telegram bot token |
+| `notify_telegram_chat` | — | Telegram chat id (numeric) |
+| `notify_ntfy_topic` | — | ntfy topic |
+| `notify_ntfy_url` | `https://ntfy.sh` | ntfy server URL (for self-hosted) |
+| `prompt_on_startup` | `True` | Show the recovery dialog on boot |
+| `prompt_retries` | `6` | How many times to re-show the dialog (for Fluidd) |
+| `prompt_interval` | `20.0` | Interval between dialog re-shows (s) |
 
-Новые опции появляются в твоём `repower.cfg` автоматически при обновлении (как
-закомментированные подсказки), уже выставленные значения не трогаются.
-
----
-
-## Что сохраняется в снапшоте
-
-- позиция в G-code файле (байтовый offset в `virtual_sdcard`);
-- координаты X/Y/Z/E и gcode-координаты;
-- целевые температуры сопла и стола, обороты вентилятора;
-- factors скорости/потока (M220/M221), режимы G90/G91 и M82/M83;
-- активный профиль сетки стола (bed mesh) и gcode-offset (Z-offset/babystep);
-- bounding box модели (для выбора чистой точки пробы).
-
-При возобновлении `REPOWER_RESUME` восстанавливает режимы/factors/вентилятор,
-**заново загружает сетку стола** (`BED_MESH_PROFILE LOAD=...`) и **применяет
-gcode-offset** (`SET_GCODE_OFFSET ... MOVE=0`), затем задаёт origin экструдера
-(`G92 E`) и продолжает файл с сохранённого байта.
+New options appear in your `repower.cfg` automatically on update (as commented
+hints); values you already set are left untouched.
 
 ---
 
-## Файлы
+## What the snapshot stores
 
-| Файл | Что это |
+- position in the G-code file (byte offset in `virtual_sdcard`);
+- X/Y/Z/E and gcode coordinates;
+- target nozzle/bed temperatures, fan speed;
+- speed/flow factors (M220/M221), G90/G91 and M82/M83 modes;
+- the active bed mesh profile and the gcode offset (probe Z-offset / babystep);
+- the model bounding box (to pick the clear probe point).
+
+On resume, `REPOWER_RESUME` restores modes/factors/fan, **re-loads the bed
+mesh** (`BED_MESH_PROFILE LOAD=...`) and **re-applies the gcode offset**
+(`SET_GCODE_OFFSET ... MOVE=0`), then sets the extruder origin (`G92 E`) and
+continues the file from the saved byte.
+
+---
+
+## Files
+
+| File | What it is |
 | --- | --- |
-| `repower.py` | Модуль Klipper (`klippy/extras/`) — снапшоты, логика, статус |
-| `repower_macros.cfg` | Макросы восстановления (симлинк, авто-обновляется) |
-| `repower.cfg` | Твои настройки `[repower]` (копия, не перетирается) |
-| `install.sh` | Установщик / пульт управления |
+| `repower.py` | Klipper module (`klippy/extras/`) — snapshots, logic, status |
+| `repower_macros.cfg` | Recovery macros (symlinked, auto-updates) |
+| `repower.cfg` | Your `[repower]` settings (a copy, not overwritten) |
+| `install.sh` | Installer / control panel |
 
-> 🛟 Установщик вставляет свои секции в `printer.cfg` **перед** авто-блоком
-> `#*# SAVE_CONFIG`, поэтому калибровки BLTouch и сетки стола не затираются.
+> 🛟 The installer inserts its sections into `printer.cfg` **before** the
+> `#*# SAVE_CONFIG` block, so BLTouch offsets and bed meshes are not clobbered.
 
-Совет: добавь `REPOWER_CLEAR` в свои `PRINT_END` и `CANCEL_PRINT`, чтобы после
-штатного завершения не оставалось «протухшего» состояния (плагин и сам чистит
-при нормальном завершении).
+Tip: add `REPOWER_CLEAR` to your `PRINT_END` and `CANCEL_PRINT` macros so a
+stale snapshot is never left after a normal finish (the plugin also auto-clears
+on clean completion).
 
 ---
 
-## Как это работает (коротко)
+## How it works (short)
 
-`repower.py` по таймеру опрашивает `virtual_sdcard`, `toolhead`, `gcode_move`,
-нагреватели, вентилятор и атомарно (temp-файл + rename) пишет JSON-снапшот. На
-старте читает снапшот: если печать была прервана — поднимает
-`printer.repower.recoverable`. Возобновление переоткрывает файл, делает `seek()`
-на сохранённый offset и запускает `do_resume()` у `virtual_sdcard`.
+`repower.py` polls `virtual_sdcard`, `toolhead`, `gcode_move`, heaters and the
+fan on a timer and atomically (temp file + rename) writes a JSON snapshot. On
+boot it reads the snapshot: if a print was interrupted it raises
+`printer.repower.recoverable`. Resume reopens the file, `seek()`s to the saved
+offset and starts `do_resume()` on `virtual_sdcard`.
 
-## Ограничения и планы
+## Limitations and plans
 
-- Между последним снапшотом и отключением теряется до `save_interval` секунд
-  печати → возможен небольшой шов.
-- Возврат по Z: при `use_probe` высота измеряется пробой (ловит просадку);
-  без пробы — предполагается, что Z удержал позицию.
-- **Планируется:** аппаратный детектор питания (GPIO + конденсатор) для
-  сохранения точного состояния в момент сбоя и аварийной парковки.
+- Up to `save_interval` seconds of printing is lost between the last snapshot
+  and the outage → a small seam is possible there.
+- Z return: with `use_probe` the height is measured by the probe (catches a
+  drop); without a probe, Z is assumed to have held.
+- **Planned:** a hardware power-loss detector (GPIO + capacitor) to capture the
+  exact state at the moment of failure and park safely.

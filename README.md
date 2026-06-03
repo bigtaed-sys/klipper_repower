@@ -1,22 +1,24 @@
-# repower — восстановление печати после потери питания (Klipper)
+# repower — power-loss recovery for Klipper
 
-Плагин для Klipper: во время печати сохраняет состояние, а после внезапного
-отключения питания продолжает печать примерно с того места, где она
-остановилась. Без дополнительного железа (на снапшотах). Если есть проба —
-точно восстанавливает высоту Z и аккуратно прочищает сопло линией.
+**English** · [Русский](README_RU.md)
 
-> ⚠️ Восстановление на FDM не на 100% надёжно: возможен небольшой шов в месте
-> возобновления. Плагин делает «как можно лучше».
+A Klipper plugin that saves print state while printing and, after an
+unexpected power loss, resumes the print roughly where it stopped. No extra
+hardware (snapshot based). If you have a probe, it re-establishes the true Z
+height and cleanly purges the nozzle with a prime line.
 
-## Что нужно
+> ⚠️ Power-loss recovery on FDM is not 100% reliable: a small seam at the
+> resume point is possible. The plugin does its best.
 
-- Печать с хоста через `[virtual_sdcard]` (Mainsail / Fluidd).
-- `[force_move]` с `enable_force_move: True` (установщик добавит сам).
-- Винтовая ось Z (держит позицию при выключении).
+## Requirements
 
-## Установка
+- Printing from the host via `[virtual_sdcard]` (Mainsail / Fluidd).
+- `[force_move]` with `enable_force_move: True` (the installer adds it).
+- A lead-screw Z axis (holds position when powered off).
 
-На хосте (MKS Pi / Raspberry Pi):
+## Install
+
+On the host (MKS Pi / Raspberry Pi):
 
 ```bash
 git clone https://github.com/bigtaed-sys/klipper_repower ~/repower
@@ -25,27 +27,27 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Откроется меню (RU/EN) — оно само найдёт Klipper, поставит плагин, пропишет
-всё в конфиги и предложит настройки. Просто пройди по пунктам и в конце выбери
-**Apply (restart Klipper)**. Всё.
+A menu (EN/RU) opens — it finds Klipper, installs the plugin, wires up the
+config and offers settings. Walk through it and pick **Apply (restart
+Klipper)** at the end. Done.
 
-## Как пользоваться
+## Usage
 
-1. Печатаешь как обычно — плагин молча сохраняет прогресс.
-2. Пропало питание → включаешь принтер обратно.
-3. В Mainsail/Fluidd всплывёт окно **«Power-loss recovery»** — нажми
-   **Recover**. (Или выполни команду `REPOWER_RECOVER` в консоли.)
-4. Принтер прогреется, отхоумит X/Y, восстановит высоту и продолжит печать.
+1. Print as usual — the plugin silently saves progress.
+2. Power is lost → turn the printer back on.
+3. A **"Power-loss recovery"** dialog pops up in Mainsail/Fluidd — press
+   **Recover**. (Or run `REPOWER_RECOVER` in the console.)
+4. The printer heats up, homes X/Y, restores the height and resumes printing.
 
-Не нужно возобновлять — нажми **Discard** (или `REPOWER_CLEAR`).
+Don't want to resume — press **Discard** (or `REPOWER_CLEAR`).
 
-## Настройки
+## Settings
 
-Запусти `./install.sh` ещё раз и выбери **Recovery settings & modes** или
-**Notifications** — там всё меняется через меню (интервал снапшотов, прочистка,
-проба Z, Telegram/ntfy и т.д.).
+Run `./install.sh` again and choose **Recovery settings & modes** or
+**Notifications** — everything is editable from the menu (snapshot interval,
+purge, probe-based Z, Telegram/ntfy, etc.).
 
-## Подробности
+## Details
 
-Полное описание (все команды и параметры, проба Z, линия прочистки,
-уведомления, диалоги, как это работает, ограничения) — в **[DOCS.md](DOCS.md)**.
+Full reference (all commands and parameters, probe-based Z, purge line,
+notifications, dialogs, internals, limitations) — see **[DOCS.md](DOCS.md)**.

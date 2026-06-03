@@ -31,6 +31,107 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 # =============================================================================
+#  Localization (the control panel itself, EN/RU)
+# =============================================================================
+UI_LANG="en"
+declare -A MSG_EN=(
+    [mm_title]="Main menu"           [mm_sub]="repower control panel"
+    [mm_pending]="  (changes pending)"
+    [mm_settings]="Recovery settings & modes"
+    [mm_notify]="Notifications"      [mm_language]="Language"
+    [mm_status]="Show current configuration"
+    [mm_apply]="Apply changes (restart Klipper)"
+    [mm_reinstall]="Reinstall / repair links"
+    [mm_uninstall]="Uninstall"       [mm_quit]="Exit"
+    [back]="‹ Back"
+    [set_title]="Recovery settings"  [set_pick]="Pick a setting to change:"
+    [set_interval]="Snapshot interval"   [set_purge]="Purge after re-heat"
+    [set_prime]="Prime on return"        [set_zhop]="Z hop"
+    [set_travel]="Travel speed"          [set_parkx]="Park X (<0 = off)"
+    [set_party]="Park Y (<0 = off)"      [set_probe]="Probe-based Z recovery"
+    [on]="ON" [off]="OFF"
+    [q_interval]="Seconds (lower = less lost progress, more disk writes):"
+    [l_purge]="Purge (mm)"  [l_prime]="Prime (mm)"  [l_zhop]="Z hop (mm)"
+    [l_travel]="Travel speed (mm/s)"
+    [l_parkx]="Park X (<0 disables)"  [l_party]="Park Y (<0 disables)"
+    [probe_title]="Probe-based Z recovery"
+    [probe_q]="Probe a clear bed area to re-establish true Z on recovery?\n\nNeeds a probe; safe on screw Z."
+    [nt_title]="Notifications"           [nt_channel]="Channel"
+    [nt_telegram]="Use Telegram"         [nt_ntfy]="Use ntfy"
+    [nt_none]="Disable notifications"    [nt_test]="Send a test notification"
+    [tg_token]="Bot token (from @BotFather):"
+    [tg_chat]="Chat id (numeric):"
+    [ntfy_topic]="Topic (subscribe to it in the ntfy app):"
+    [ntfy_url]="Server URL:"
+    [test_title]="Test notification"
+    [test_disabled]="Notifications are disabled."
+    [test_nocurl]="curl not found."
+    [test_ok]="Sent — check your device."
+    [test_fail]="Failed to send. Check token/topic and network."
+    [lang_title]="Language"
+    [lang_q]="Dialog & notification language (current: %s):"
+    [st_title]="Current configuration"  [st_pending]="Pending restart"
+    [yes]="yes" [no]="no"
+    [un_title]="Uninstall"
+    [un_q]="Remove the repower module link and restart Klipper?\n\n(repower.cfg and printer.cfg/moonraker entries are left in place.)"
+    [un_done]="Done. Module unlinked and Klipper restarted."
+    [apply_title]="Apply changes"
+    [apply_q]="Settings changed. Restart Klipper now to apply?"
+    [ri_title]="Reinstall"  [ri_done]="Links and config verified."
+)
+declare -A MSG_RU=(
+    [mm_title]="Главное меню"        [mm_sub]="Панель управления repower"
+    [mm_pending]="  (есть изменения)"
+    [mm_settings]="Настройки и режимы восстановления"
+    [mm_notify]="Уведомления"        [mm_language]="Язык"
+    [mm_status]="Показать текущую конфигурацию"
+    [mm_apply]="Применить (перезапуск Klipper)"
+    [mm_reinstall]="Переустановить / починить ссылки"
+    [mm_uninstall]="Удалить"         [mm_quit]="Выход"
+    [back]="‹ Назад"
+    [set_title]="Настройки восстановления"  [set_pick]="Выберите, что изменить:"
+    [set_interval]="Интервал снапшотов"   [set_purge]="Прочистка после нагрева"
+    [set_prime]="Прайм при возврате"      [set_zhop]="Подъём Z"
+    [set_travel]="Скорость перемещения"   [set_parkx]="Парковка X (<0 = выкл)"
+    [set_party]="Парковка Y (<0 = выкл)"  [set_probe]="Восстановление Z пробой"
+    [on]="ВКЛ" [off]="ВЫКЛ"
+    [q_interval]="Секунды (меньше = меньше потерь, чаще запись):"
+    [l_purge]="Прочистка (мм)"  [l_prime]="Прайм (мм)"  [l_zhop]="Подъём Z (мм)"
+    [l_travel]="Скорость перемещения (мм/с)"
+    [l_parkx]="Парковка X (<0 — выкл)"  [l_party]="Парковка Y (<0 — выкл)"
+    [probe_title]="Восстановление Z пробой"
+    [probe_q]="Щупать чистый участок стола, чтобы измерить истинный Z при восстановлении?\n\nНужна проба; безопасно для винтового Z."
+    [nt_title]="Уведомления"             [nt_channel]="Канал"
+    [nt_telegram]="Использовать Telegram" [nt_ntfy]="Использовать ntfy"
+    [nt_none]="Выключить уведомления"    [nt_test]="Отправить тест"
+    [tg_token]="Токен бота (от @BotFather):"
+    [tg_chat]="Chat id (числовой):"
+    [ntfy_topic]="Тема (подпишитесь в приложении ntfy):"
+    [ntfy_url]="URL сервера:"
+    [test_title]="Тест уведомления"
+    [test_disabled]="Уведомления выключены."
+    [test_nocurl]="curl не найден."
+    [test_ok]="Отправлено — проверьте устройство."
+    [test_fail]="Не удалось отправить. Проверьте токен/тему и сеть."
+    [lang_title]="Язык"
+    [lang_q]="Язык диалогов и уведомлений (сейчас: %s):"
+    [st_title]="Текущая конфигурация"  [st_pending]="Нужен перезапуск"
+    [yes]="да" [no]="нет"
+    [un_title]="Удаление"
+    [un_q]="Снять ссылку на модуль repower и перезапустить Klipper?\n\n(repower.cfg и записи в printer.cfg/moonraker остаются.)"
+    [un_done]="Готово. Модуль отвязан, Klipper перезапущен."
+    [apply_title]="Применить изменения"
+    [apply_q]="Настройки изменены. Перезапустить Klipper сейчас?"
+    [ri_title]="Переустановка"  [ri_done]="Ссылки и конфиг проверены."
+)
+t() {
+    local k="$1" v=""
+    if [ "${UI_LANG}" = "ru" ]; then v="${MSG_RU[$k]:-}"; fi
+    [ -n "${v}" ] || v="${MSG_EN[$k]:-$k}"
+    printf '%s' "${v}"
+}
+
+# =============================================================================
 #  UI primitives (whiptail when available, plain prompts otherwise)
 # =============================================================================
 HAS_WHIPTAIL=0
@@ -189,7 +290,7 @@ restart_service() {
 }
 maybe_restart() {
     [ "${NEED_RESTART}" = 1 ] || return 0
-    if ui_yesno "Apply changes" "Settings changed. Restart Klipper now to apply?"; then
+    if ui_yesno "$(t apply_title)" "$(t apply_q)"; then
         restart_service
     fi
 }
@@ -251,45 +352,43 @@ core_install() {
 # =============================================================================
 #  Menu actions
 # =============================================================================
-edit_number() {  # section-fn-prefix label key default min max
-    local kind="$1" label="$2" key="$3" def="$4"
-    local cur new; cur="$( [ "${kind}" = rp ] && get_rp "${key}" || get_mac "${key}" )"
-    cur="${cur:-$def}"
+edit_number() {  # label key default
+    local label="$1" key="$2" def="$3"
+    local cur new; cur="$(get_mac "variable_${key}")"; cur="${cur:-$def}"
     new="$(ui_input "${label}" "${label}:" "${cur}")" || return 0
     [ -n "${new}" ] || return 0
-    [ "${kind}" = rp ] && set_rp "${key}" "${new}" || set_mac "variable_${key}" "${new}"
+    set_mac "variable_${key}" "${new}"
 }
 
 settings_menu() {
     while true; do
-        local si pg pr zh tv px py up
+        local si pg pr zh tv px py up up_lbl c
         si="$(gd save_interval 1.0)"
         pg="$(gm variable_purge 8)";  pr="$(gm variable_prime 0)"
         zh="$(gm variable_z_hop 5)";  tv="$(gm variable_travel_speed 150)"
         px="$(gm variable_park_x -1)"; py="$(gm variable_park_y -1)"
         up="$(gm variable_use_probe 1)"
-        local up_lbl="ON"; [ "${up}" = 0 ] && up_lbl="OFF"
-        local c
-        c="$(ui_menu "Recovery settings" "Pick a setting to change:" \
-            interval "Snapshot interval ............. ${si} s" \
-            purge    "Purge after re-heat .......... ${pg} mm" \
-            prime    "Prime on return .............. ${pr} mm" \
-            zhop     "Z hop ........................ ${zh} mm" \
-            travel   "Travel speed ................. ${tv} mm/s" \
-            parkx    "Park X (<0 = off) ............ ${px}" \
-            parky    "Park Y (<0 = off) ............ ${py}" \
-            probe    "Probe-based Z recovery ....... ${up_lbl}" \
-            back     "‹ Back")" || return 0
+        up_lbl="$(t on)"; [ "${up}" = 0 ] && up_lbl="$(t off)"
+        c="$(ui_menu "$(t set_title)" "$(t set_pick)" \
+            interval "$(t set_interval): ${si} s" \
+            purge    "$(t set_purge): ${pg} mm" \
+            prime    "$(t set_prime): ${pr} mm" \
+            zhop     "$(t set_zhop): ${zh} mm" \
+            travel   "$(t set_travel): ${tv} mm/s" \
+            parkx    "$(t set_parkx): ${px}" \
+            parky    "$(t set_party): ${py}" \
+            probe    "$(t set_probe): ${up_lbl}" \
+            back     "$(t back)")" || return 0
         case "${c}" in
-            interval) local v; v="$(ui_input "Snapshot interval" "Seconds (lower = less lost, more writes):" "${si}")" && [ -n "${v}" ] && set_rp save_interval "${v}";;
-            purge)  edit_number mac "Purge (mm)" purge 8;;
-            prime)  edit_number mac "Prime (mm)" prime 0;;
-            zhop)   edit_number mac "Z hop (mm)" z_hop 5;;
-            travel) edit_number mac "Travel speed (mm/s)" travel_speed 150;;
-            parkx)  edit_number mac "Park X (<0 disables)" park_x -1;;
-            parky)  edit_number mac "Park Y (<0 disables)" park_y -1;;
+            interval) local v; v="$(ui_input "$(t set_interval)" "$(t q_interval)" "${si}")" && [ -n "${v}" ] && set_rp save_interval "${v}";;
+            purge)  edit_number "$(t l_purge)" purge 8;;
+            prime)  edit_number "$(t l_prime)" prime 0;;
+            zhop)   edit_number "$(t l_zhop)" z_hop 5;;
+            travel) edit_number "$(t l_travel)" travel_speed 150;;
+            parkx)  edit_number "$(t l_parkx)" park_x -1;;
+            parky)  edit_number "$(t l_party)" park_y -1;;
             probe)
-                if ui_yesno "Probe-based Z recovery" "Probe a clear bed area to re-establish true Z on recovery?\n\nNeeds a probe; safe on screw Z. (Currently: ${up_lbl})"; then
+                if ui_yesno "$(t probe_title)" "$(t probe_q)"; then
                     set_mac variable_use_probe 1
                 else
                     set_mac variable_use_probe 0
@@ -301,26 +400,25 @@ settings_menu() {
 
 notify_menu() {
     while true; do
-        local ch; ch="$(gd notify none)"
-        local c
-        c="$(ui_menu "Notifications" "Channel: ${ch}" \
-            telegram "Use Telegram" \
-            ntfy     "Use ntfy" \
-            none     "Disable notifications" \
-            test     "Send a test notification" \
-            back     "‹ Back")" || return 0
+        local ch c; ch="$(gd notify none)"
+        c="$(ui_menu "$(t nt_title)" "$(t nt_channel): ${ch}" \
+            telegram "$(t nt_telegram)" \
+            ntfy     "$(t nt_ntfy)" \
+            none     "$(t nt_none)" \
+            test     "$(t nt_test)" \
+            back     "$(t back)")" || return 0
         case "${c}" in
             telegram)
                 local tok chat
-                tok="$(ui_input "Telegram" "Bot token (from @BotFather):" "$(get_rp notify_telegram_token)")" || continue
-                chat="$(ui_input "Telegram" "Chat id (numeric):" "$(get_rp notify_telegram_chat)")" || continue
+                tok="$(ui_input "Telegram" "$(t tg_token)" "$(get_rp notify_telegram_token)")" || continue
+                chat="$(ui_input "Telegram" "$(t tg_chat)" "$(get_rp notify_telegram_chat)")" || continue
                 set_rp notify telegram
                 set_rp notify_telegram_token "${tok}"
                 set_rp notify_telegram_chat "${chat}";;
             ntfy)
                 local topic url
-                topic="$(ui_input "ntfy" "Topic (subscribe to it in the app):" "$(get_rp notify_ntfy_topic)")" || continue
-                url="$(ui_input "ntfy" "Server URL:" "$(gd notify_ntfy_url https://ntfy.sh)")" || continue
+                topic="$(ui_input "ntfy" "$(t ntfy_topic)" "$(get_rp notify_ntfy_topic)")" || continue
+                url="$(ui_input "ntfy" "$(t ntfy_url)" "$(gd notify_ntfy_url https://ntfy.sh)")" || continue
                 set_rp notify ntfy
                 set_rp notify_ntfy_topic "${topic}"
                 set_rp notify_ntfy_url "${url}";;
@@ -333,8 +431,8 @@ notify_menu() {
 
 test_notify() {
     local ch; ch="$(gd notify none)"
-    [ "${ch}" = none ] && { ui_msg "Test" "Notifications are disabled."; return; }
-    command -v curl >/dev/null 2>&1 || { ui_msg "Test" "curl not found."; return; }
+    [ "${ch}" = none ] && { ui_msg "$(t test_title)" "$(t test_disabled)"; return; }
+    command -v curl >/dev/null 2>&1 || { ui_msg "$(t test_title)" "$(t test_nocurl)"; return; }
     local ok=1
     if [ "${ch}" = telegram ]; then
         curl -fsS "https://api.telegram.org/bot$(get_rp notify_telegram_token)/sendMessage" \
@@ -344,16 +442,17 @@ test_notify() {
         curl -fsS -d "repower: test notification" \
             "$(gd notify_ntfy_url https://ntfy.sh)/$(get_rp notify_ntfy_topic)" >/dev/null 2>&1 && ok=0
     fi
-    [ "${ok}" = 0 ] && ui_msg "Test" "Sent — check your device." \
-                    || ui_msg "Test" "Failed to send. Check token/topic and network."
+    [ "${ok}" = 0 ] && ui_msg "$(t test_title)" "$(t test_ok)" \
+                    || ui_msg "$(t test_title)" "$(t test_fail)"
 }
 
 language_menu() {
-    local cur; cur="$(gd language en)"
-    local c
-    c="$(ui_menu "Language" "Dialog & notification language (current: ${cur}):" \
-        en "English" ru "Русский" back "‹ Back")" || return 0
-    case "${c}" in en|ru) set_rp language "${c}";; esac
+    local cur c; cur="$(gd language en)"
+    c="$(ui_menu "$(t lang_title)" "$(printf "$(t lang_q)" "${cur}")" \
+        en "English" ru "Русский" back "$(t back)")" || return 0
+    case "${c}" in
+        en|ru) set_rp language "${c}"; UI_LANG="${c}";;
+    esac
 }
 
 status_screen() {
@@ -370,40 +469,52 @@ purge / prime:   $(gm variable_purge 8) / $(gm variable_prime 0) mm
 z_hop / travel:  $(gm variable_z_hop 5) / $(gm variable_travel_speed 150)
 park_x / park_y: $(gm variable_park_x -1) / $(gm variable_park_y -1)
 
-Pending restart: $( [ "${NEED_RESTART}" = 1 ] && echo yes || echo no )"
-    ui_msg "Current configuration" "${txt}"
+$(t st_pending): $( [ "${NEED_RESTART}" = 1 ] && t yes || t no )"
+    ui_msg "$(t st_title)" "${txt}"
 }
 
 do_uninstall() {
     resolve_paths
-    ui_yesno "Uninstall" "Remove the repower module link and restart Klipper?\n\n(${PLUGIN}.cfg and printer.cfg/moonraker entries are left in place.)" \
-        || return 0
+    UI_LANG="$(gd language en)"
+    ui_yesno "$(t un_title)" "$(t un_q)" || return 0
     [ -L "${EXTRAS_LINK}" ] && { rm -f "${EXTRAS_LINK}"; log "Removed module link"; }
     warn "Left ${PLUGIN}.cfg + [include]/[force_move]/[update_manager] entries."
     restart_service
-    ui_msg "Uninstall" "Done. Module unlinked and Klipper restarted."
+    ui_msg "$(t un_title)" "$(t un_done)"
+}
+
+ensure_ui_language() {
+    # Use the configured language for the panel; ask once if unset.
+    UI_LANG="$(get_rp language)"
+    if [ -z "${UI_LANG}" ]; then
+        UI_LANG="$(ui_menu "Язык / Language" "Выберите язык / Choose a language" \
+            en "English" ru "Русский")" || UI_LANG="en"
+        [ -n "${UI_LANG}" ] || UI_LANG="en"
+        set_rp language "${UI_LANG}"
+    fi
 }
 
 main_menu() {
+    ensure_ui_language
     while true; do
-        local rflag=""; [ "${NEED_RESTART}" = 1 ] && rflag="  (changes pending)"
+        local rflag=""; [ "${NEED_RESTART}" = 1 ] && rflag="$(t mm_pending)"
         local c
-        c="$(ui_menu "Main menu${rflag}" "repower control panel" \
-            settings  "Recovery settings & modes" \
-            notify    "Notifications" \
-            language  "Language" \
-            status    "Show current configuration" \
-            apply     "Apply changes (restart Klipper)" \
-            reinstall "Reinstall / repair links" \
-            uninstall "Uninstall" \
-            quit      "Exit")" || { maybe_restart; return 0; }
+        c="$(ui_menu "$(t mm_title)${rflag}" "$(t mm_sub)" \
+            settings  "$(t mm_settings)" \
+            notify    "$(t mm_notify)" \
+            language  "$(t mm_language)" \
+            status    "$(t mm_status)" \
+            apply     "$(t mm_apply)" \
+            reinstall "$(t mm_reinstall)" \
+            uninstall "$(t mm_uninstall)" \
+            quit      "$(t mm_quit)")" || { maybe_restart; return 0; }
         case "${c}" in
             settings)  settings_menu;;
             notify)    notify_menu;;
             language)  language_menu;;
             status)    status_screen;;
             apply)     restart_service;;
-            reinstall) core_install; ui_msg "Reinstall" "Links and config verified.";;
+            reinstall) core_install; ui_msg "$(t ri_title)" "$(t ri_done)";;
             uninstall) do_uninstall;;
             quit)      maybe_restart; return 0;;
         esac

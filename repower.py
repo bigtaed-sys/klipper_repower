@@ -30,7 +30,10 @@ STRINGS = {
         'subtitle_armed': 'You can resume it below.',
         'file': 'File', 'progress': 'Progress', 'height': 'Height',
         'pos': 'Position', 'nozzle': 'Nozzle', 'bed': 'Bed', 'fan': 'Fan',
-        'zmethod': 'Z recovery',
+        'zmethod': 'Z recovery', 'probe_at': 'Probe point',
+        'use_probe_label': 'Probe Z on recovery',
+        'sec_notify': 'Notifications', 'notify_channel': 'Channel',
+        'btn_test_notify': 'Send test',
         'sec_recover': 'Resume print',
         'btn_recover': 'Recover', 'btn_discard': 'Discard',
         'btn_close': 'Close',
@@ -61,7 +64,10 @@ STRINGS = {
         'subtitle_armed': 'Можно возобновить ниже.',
         'file': 'Файл', 'progress': 'Прогресс', 'height': 'Высота',
         'pos': 'Позиция', 'nozzle': 'Сопло', 'bed': 'Стол', 'fan': 'Обдув',
-        'zmethod': 'Восстановление Z',
+        'zmethod': 'Восстановление Z', 'probe_at': 'Точка пробы',
+        'use_probe_label': 'Проба Z при восстановлении',
+        'sec_notify': 'Уведомления', 'notify_channel': 'Канал',
+        'btn_test_notify': 'Отправить тест',
         'sec_recover': 'Возобновить печать',
         'btn_recover': 'Восстановить', 'btn_discard': 'Сбросить',
         'btn_close': 'Закрыть',
@@ -594,7 +600,10 @@ class Repower:
                     status('X', 'x', 'mm', 'fixed1'),
                     status('Y', 'y', 'mm', 'fixed1'),
                 ]},
-                status(L['zmethod'], 'z_method'),
+                {'type': 'row', 'children': [
+                    status(L['zmethod'], 'z_method'),
+                    status(L['probe_at'], 'probe_point'),
+                ]},
                 {'type': 'row', 'children': [
                     {'type': 'button', 'label': L['btn_recover'],
                      'icon': 'play', 'color': 'success',
@@ -616,6 +625,14 @@ class Repower:
             {'type': 'section', 'title': L['sec_settings'], 'children': [
                 {'type': 'text', 'variant': 'caption',
                  'value': L['hint_settings']},
+                {'type': 'switch', 'label': L['use_probe_label'],
+                 'bind': macro + '.use_probe',
+                 'on': {'kind': 'gcode',
+                        'command': 'SET_GCODE_VARIABLE MACRO=REPOWER_RECOVER'
+                                   ' VARIABLE=use_probe VALUE=1'},
+                 'off': {'kind': 'gcode',
+                         'command': 'SET_GCODE_VARIABLE MACRO=REPOWER_RECOVER'
+                                    ' VARIABLE=use_probe VALUE=0'}},
                 {'type': 'row', 'children': [
                     number(L['purge'], 'purge', 0, 50, 1),
                     number(L['prime'], 'prime', 0, 20, 0.5),
@@ -628,6 +645,13 @@ class Repower:
                     number(L['park_x'], 'park_x', -1, 1000, 1),
                     number(L['park_y'], 'park_y', -1, 1000, 1),
                 ]},
+            ]},
+            {'type': 'section', 'title': L['sec_notify'], 'children': [
+                {'type': 'status', 'label': L['notify_channel'],
+                 'value': {'bind': 'repower.notify'}},
+                {'type': 'button', 'label': L['btn_test_notify'],
+                 'icon': 'send', 'color': 'secondary',
+                 'action': {'kind': 'gcode', 'command': 'REPOWER_NOTIFY_TEST'}},
             ]},
             {'type': 'section', 'title': L['sec_language'], 'children': [
                 {'type': 'select', 'label': L['lang_label'],
@@ -676,7 +700,10 @@ class Repower:
             'probe_x': round(probe_x, 2),
             'probe_y': round(probe_y, 2),
             'probe_z_offset': round(self._probe_z_offset, 4),
+            'probe_point': ('%.0f, %.0f' % (probe_x, probe_y)
+                            if probe_ok else '—'),
             'z_method': 'probe' if probe_ok else 'trust',
+            'notify': self.notify,
             'file_name': st.get('file_name', ''),
             'file_position': fpos,
             'file_size': fsize,

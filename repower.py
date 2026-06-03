@@ -96,6 +96,19 @@ class Repower:
         # Fixed fallback probe point (mm). <0 = unset.
         self.recovery_probe_x = config.getfloat('recovery_probe_x', -1.)
         self.recovery_probe_y = config.getfloat('recovery_probe_y', -1.)
+
+        # --- Recovery motion tunables (read by the REPOWER_RECOVER macro) ---
+        # Kept here (not as macro variables) so the menu/installer can edit
+        # them in the user-owned config while the macro logic auto-updates.
+        self.use_probe = config.getboolean('use_probe', True)
+        self.z_hop = config.getfloat('z_hop', 5., minval=0.)
+        self.travel_speed = config.getfloat('travel_speed', 150., above=0.)
+        self.purge = config.getfloat('purge', 8., minval=0.)
+        self.purge_retract = config.getfloat('purge_retract', 0.8, minval=0.)
+        self.prime = config.getfloat('prime', 0., minval=0.)
+        self.park_x = config.getfloat('park_x', -1.)
+        self.park_y = config.getfloat('park_y', -1.)
+
         # Running model bounding box [minx, miny, maxx, maxy] for the current
         # print, and the file it belongs to (reset when the file changes).
         self._bbox = None
@@ -498,6 +511,13 @@ class Repower:
             'probe_x': round(probe_x, 2),
             'probe_y': round(probe_y, 2),
             'probe_z_offset': round(self._probe_z_offset, 4),
+            # Recovery motion tunables (defaults for the macro; per-call
+            # params still override them).
+            'use_probe': 1 if self.use_probe else 0,
+            'z_hop': self.z_hop, 'travel_speed': self.travel_speed,
+            'purge': self.purge, 'purge_retract': self.purge_retract,
+            'prime': self.prime,
+            'park_x': self.park_x, 'park_y': self.park_y,
             'file_name': st.get('file_name', ''),
             'file_position': fpos,
             'file_size': fsize,

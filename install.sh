@@ -212,6 +212,7 @@ find_service() {
 }
 
 EXTRAS_LINK=""; CONFIG_DIR=""; PRINTER_CFG=""; ACTIVE_CFG=""; TEMPLATE_CFG=""
+MACROS_LINK=""; TEMPLATE_MACROS=""
 resolve_paths() {
     local kp cd
     kp="$(find_klipper)" || { err "Klipper not found. Set KLIPPER_PATH."; exit 1; }
@@ -221,6 +222,8 @@ resolve_paths() {
     PRINTER_CFG="${CONFIG_DIR}/printer.cfg"
     ACTIVE_CFG="${CONFIG_DIR}/${PLUGIN}.cfg"
     TEMPLATE_CFG="${SCRIPT_DIR}/${PLUGIN}.cfg"
+    MACROS_LINK="${CONFIG_DIR}/${PLUGIN}_macros.cfg"
+    TEMPLATE_MACROS="${SCRIPT_DIR}/${PLUGIN}_macros.cfg"
 }
 
 # =============================================================================
@@ -269,13 +272,10 @@ cfg_set() {
         END { if (insec && !done) print key ": " val }
     ' "${file}" > "${file}.rptmp" && mv "${file}.rptmp" "${file}"
 }
-get_rp()  { cfg_get "${ACTIVE_CFG}" "[repower]" "$1"; }
-get_mac() { cfg_get "${ACTIVE_CFG}" "[gcode_macro REPOWER_RECOVER]" "$1"; }
-set_rp()  { cfg_set "${ACTIVE_CFG}" "[repower]" "$1" "$2"; NEED_RESTART=1; }
-set_mac() { cfg_set "${ACTIVE_CFG}" "[gcode_macro REPOWER_RECOVER]" "$1" "$2"; NEED_RESTART=1; }
+get_rp() { cfg_get "${ACTIVE_CFG}" "[repower]" "$1"; }
+set_rp() { cfg_set "${ACTIVE_CFG}" "[repower]" "$1" "$2"; NEED_RESTART=1; }
 # value or default
-gd() { local v; v="$(get_rp "$1")";  echo "${v:-$2}"; }
-gm() { local v; v="$(get_mac "$1")"; echo "${v:-$2}"; }
+gd() { local v; v="$(get_rp "$1")"; echo "${v:-$2}"; }
 
 restart_service() {
     local svc
@@ -298,13 +298,36 @@ maybe_restart() {
 # =============================================================================
 #  Core install (idempotent)
 # =============================================================================
+# Carry an old monolithic repower.cfg (settings + macros) over to the new
+# split layout: keep [repower], move tuned variables into it, drop the macros
+# (now provided by the symlinked repower_macros.cfg).
+migrate_settings() {
+    [ -f "${ACTIVE_CFG}" ] && ! [ -L "${ACTIVE_CFG}" ] || return 0
+    grep -q '^\[gcode_macro REPOWER_RECOVER\]' "${ACTIVE_CFG}" || return 0
+    log "Migrating old ${PLUGIN}.cfg (splitting macros out)..."
+    cp "${ACTIVE_CFG}" "${ACTIVE_CFG}.bak"
+    local k v
+    for k in z_hop travel_speed purge purge_retract prime park_x park_y use_probe; do
+        v="$(cfg_get "${ACTIVE_CFG}" "[gcode_macro REPOWER_RECOVER]" "variable_${k}")"
+        [ -n "${v}" ] && cfg_set "${ACTIVE_CFG}" "[repower]" "${k}" "${v}"
+    done
+    awk 'BEGIN{c=0} /^\[gcode_macro/{c=1} c==0{print}' "${ACTIVE_CFG}" \
+        > "${ACTIVE_CFG}.rptmp" && mv "${ACTIVE_CFG}.rptmp" "${ACTIVE_CFG}"
+    NEED_RESTART=1
+}
 install_config() {
-    [ -L "${ACTIVE_CFG}" ] && rm -f "${ACTIVE_CFG}"          # drop old symlink
+    migrate_settings
+    [ -L "${ACTIVE_CFG}" ] && rm -f "${ACTIVE_CFG}"          # drop legacy symlink
     if [ ! -e "${ACTIVE_CFG}" ]; then
         if [ "${TEMPLATE_CFG}" -ef "${ACTIVE_CFG}" ] 2>/dev/null; then :; else
             cp "${TEMPLATE_CFG}" "${ACTIVE_CFG}"
             log "Installed ${PLUGIN}.cfg -> ${ACTIVE_CFG}"; NEED_RESTART=1
         fi
+    fi
+    # Macros: symlinked so the recovery LOGIC auto-updates with the repo.
+    if [ "${TEMPLATE_MACROS}" -ef "${MACROS_LINK}" ] 2>/dev/null; then :; else
+        ln -sf "${TEMPLATE_MACROS}" "${MACROS_LINK}"
+        log "Linked ${PLUGIN}_macros.cfg -> ${MACROS_LINK}"
     fi
 }
 wire_printer_cfg() {
@@ -312,6 +335,10 @@ wire_printer_cfg() {
     if ensure_block "${PRINTER_CFG}" \
         "^[[:space:]]*\[include ${PLUGIN}\.cfg\]" "[include ${PLUGIN}.cfg]"; then
         log "Added '[include ${PLUGIN}.cfg]'"; NEED_RESTART=1
+    fi
+    if ensure_block "${PRINTER_CFG}" \
+        "^[[:space:]]*\[include ${PLUGIN}_macros\.cfg\]" "[include ${PLUGIN}_macros.cfg]"; then
+        log "Added '[include ${PLUGIN}_macros.cfg]'"; NEED_RESTART=1
     fi
     if grep -rqsE "^[[:space:]]*enable_force_move[[:space:]]*[:=][[:space:]]*([Tt]rue|1)" "${CONFIG_DIR}"; then
         :
@@ -354,21 +381,21 @@ core_install() {
 # =============================================================================
 edit_number() {  # label key default
     local label="$1" key="$2" def="$3"
-    local cur new; cur="$(get_mac "variable_${key}")"; cur="${cur:-$def}"
+    local cur new; cur="$(gd "${key}" "${def}")"
     new="$(ui_input "${label}" "${label}:" "${cur}")" || return 0
     [ -n "${new}" ] || return 0
-    set_mac "variable_${key}" "${new}"
+    set_rp "${key}" "${new}"
 }
 
 settings_menu() {
     while true; do
         local si pg pr zh tv px py up up_lbl c
         si="$(gd save_interval 1.0)"
-        pg="$(gm variable_purge 8)";  pr="$(gm variable_prime 0)"
-        zh="$(gm variable_z_hop 5)";  tv="$(gm variable_travel_speed 150)"
-        px="$(gm variable_park_x -1)"; py="$(gm variable_park_y -1)"
-        up="$(gm variable_use_probe 1)"
-        up_lbl="$(t on)"; [ "${up}" = 0 ] && up_lbl="$(t off)"
+        pg="$(gd purge 8)";  pr="$(gd prime 0)"
+        zh="$(gd z_hop 5)";  tv="$(gd travel_speed 150)"
+        px="$(gd park_x -1)"; py="$(gd park_y -1)"
+        up="$(gd use_probe True)"
+        case "${up}" in 0|[Ff]alse|[Nn]o|off) up_lbl="$(t off)";; *) up_lbl="$(t on)";; esac
         c="$(ui_menu "$(t set_title)" "$(t set_pick)" \
             interval "$(t set_interval): ${si} s" \
             purge    "$(t set_purge): ${pg} mm" \
@@ -389,9 +416,9 @@ settings_menu() {
             parky)  edit_number "$(t l_party)" park_y -1;;
             probe)
                 if ui_yesno "$(t probe_title)" "$(t probe_q)"; then
-                    set_mac variable_use_probe 1
+                    set_rp use_probe True
                 else
-                    set_mac variable_use_probe 0
+                    set_rp use_probe False
                 fi;;
             *) return 0;;
         esac
@@ -464,10 +491,10 @@ Module:     ${EXTRAS_LINK}
 language:        $(gd language en)
 save_interval:   $(gd save_interval 1.0) s
 notify:          $(gd notify none)
-use_probe:       $(gm variable_use_probe 1)
-purge / prime:   $(gm variable_purge 8) / $(gm variable_prime 0) mm
-z_hop / travel:  $(gm variable_z_hop 5) / $(gm variable_travel_speed 150)
-park_x / park_y: $(gm variable_park_x -1) / $(gm variable_park_y -1)
+use_probe:       $(gd use_probe True)
+purge / prime:   $(gd purge 8) / $(gd prime 0) mm
+z_hop / travel:  $(gd z_hop 5) / $(gd travel_speed 150)
+park_x / park_y: $(gd park_x -1) / $(gd park_y -1)
 
 $(t st_pending): $( [ "${NEED_RESTART}" = 1 ] && t yes || t no )"
     ui_msg "$(t st_title)" "${txt}"
@@ -478,6 +505,7 @@ do_uninstall() {
     UI_LANG="$(gd language en)"
     ui_yesno "$(t un_title)" "$(t un_q)" || return 0
     [ -L "${EXTRAS_LINK}" ] && { rm -f "${EXTRAS_LINK}"; log "Removed module link"; }
+    [ -L "${MACROS_LINK}" ] && { rm -f "${MACROS_LINK}"; log "Removed macros link"; }
     warn "Left ${PLUGIN}.cfg + [include]/[force_move]/[update_manager] entries."
     restart_service
     ui_msg "$(t un_title)" "$(t un_done)"
